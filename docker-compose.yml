@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  # Next.js Application
+  gyrogame:
+    build: .
+    container_name: gyrogame_app
+    restart: always
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+    # If your app needs other env vars (e.g., SOCKET_URL, PUBLIC_URL), add them here
+    # - NEXT_PUBLIC_SOCKET_URL=https://your-domain.com
+
+    # Nginx Reverse Proxy
+
