@@ -9,14 +9,15 @@ const GAME_CONFIG = {
   HEIGHT: 600,
   CAR_WIDTH: 40,
   CAR_HEIGHT: 70,
-  BASE_SPEED: 5,          // was 1
-  NITRO_SPEED: 22,
-  ROTATION_SENSITIVITY: 2.5,
-  ROAD_WIDTH: 320,
+  BASE_SPEED: 3,
+  NITRO_SPEED: 14,
+  ROTATION_SENSITIVITY: 1.0,
+  ROAD_WIDTH: 360,
   SEGMENT_HEIGHT: 20,
   VISIBLE_SEGMENTS: 42,
-  OBSTACLE_CHANCE: 0.25,  // was 0.05
-  COIN_CHANCE: 0.30,
+  INITIAL_OBSTACLE_CHANCE: 0.08,
+  MAX_OBSTACLE_CHANCE: 0.35,
+  COIN_CHANCE: 0.25,
   COIN_SIZE: 20,
   COIN_SCORE: 50,
 };
@@ -48,7 +49,9 @@ interface GameState {
 
 function useGameLogic(paused: boolean = false) {
   const getRoadCurve = useCallback((y: number) => {
-    return (Math.sin(y * 0.002) * 150) + (Math.sin(y * 0.005) * 50);
+    // Curves get more intense the further you go
+    const intensity = Math.min(1, y / 8000); // ramp up over distance
+    return (Math.sin(y * 0.0015) * 80 * (0.3 + intensity * 0.7)) + (Math.sin(y * 0.004) * 30 * intensity);
   }, []);
 
   const createSpeedLines = (): SpeedLine[] =>
@@ -100,9 +103,10 @@ function useGameLogic(paused: boolean = false) {
         const input = inputRef.current;
 
         // Speed with difficulty progression
-        const gameTime = current.score / 10;
-        const speedBonus = Math.min(gameTime * 0.005, 5);
+        const gameTime = current.distance / 500; // difficulty ramps with distance
+        const speedBonus = Math.min(gameTime * 0.15, 6);
         const speed = (input.nitro ? GAME_CONFIG.NITRO_SPEED : GAME_CONFIG.BASE_SPEED) + speedBonus;
+        const obstacleChance = Math.min(GAME_CONFIG.INITIAL_OBSTACLE_CHANCE + gameTime * 0.008, GAME_CONFIG.MAX_OBSTACLE_CHANCE);
 
         const rad = (input.steer * Math.PI) / 180;
         const dx = Math.sin(rad) * speed;
@@ -118,7 +122,7 @@ function useGameLogic(paused: boolean = false) {
           obstacleSpawnCounter.current = Math.floor(newDistance / 80);
           const spawnY = newDistance + GAME_CONFIG.HEIGHT + 200;
 
-          if (Math.random() < GAME_CONFIG.OBSTACLE_CHANCE) {
+          if (Math.random() < obstacleChance) {
             const offset = (Math.random() * (GAME_CONFIG.ROAD_WIDTH - 60)) - (GAME_CONFIG.ROAD_WIDTH / 2 - 30);
             newObstacles.push({
               id: uuidv4(), trackY: spawnY, offsetX: offset,
@@ -180,7 +184,7 @@ function useGameLogic(paused: boolean = false) {
           ...prev,
           distance: newDistance,
           carX: newCarX,
-          carAngle: input.steer * 0.4,
+          carAngle: Math.max(-25, Math.min(25, input.steer * 0.3)),
           isNitro: input.nitro,
           obstacles: newObstacles,
           coins: newCoins.filter(c => c.active),

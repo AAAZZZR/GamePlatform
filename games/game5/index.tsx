@@ -9,8 +9,8 @@ const GAME_CONFIG = {
   HEIGHT: 600,
   SHIP_W: 44,
   SHIP_H: 54,
-  PLAYER_SPEED: 12,
-  INITIAL_ASTEROID_SPEED: 3,
+  PLAYER_SPEED: 8,
+  INITIAL_ASTEROID_SPEED: 1.8,
   SCROLL_SPEED: 2,
   COIN_SIZE: 22,
   COIN_SCORE: 25,
@@ -88,7 +88,7 @@ function useGameLogic(paused: boolean = false) {
 
   const updateGyro = useCallback((data: GyroData) => {
     if (data.gamma !== null)
-      inputRef.current.moveX = (data.gamma / 30) * GAME_CONFIG.PLAYER_SPEED;
+      inputRef.current.moveX = (data.gamma / 35) * GAME_CONFIG.PLAYER_SPEED;
   }, []);
 
   const activateShield = useCallback(() => {
@@ -133,8 +133,8 @@ function useGameLogic(paused: boolean = false) {
         const dt = Math.min(now - frameTimeRef.current, 33);
         frameTimeRef.current = now;
 
-        const difficultyLevel = Math.floor(current.gameTime / 15);
-        const asteroidSpeed = GAME_CONFIG.INITIAL_ASTEROID_SPEED + difficultyLevel * 0.4;
+        const difficultyLevel = Math.floor(current.gameTime / 20); // slower ramp
+        const asteroidSpeed = GAME_CONFIG.INITIAL_ASTEROID_SPEED + difficultyLevel * 0.3;
         const slowFactor = current.slowmo ? 0.5 : 1;
 
         // Player movement

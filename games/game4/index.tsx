@@ -10,12 +10,12 @@ const GAME_CONFIG = {
   CELL: 28,
   get WIDTH() { return this.COLS * this.CELL; },
   get HEIGHT() { return this.ROWS * this.CELL; },
-  INITIAL_SPEED: 150,   // ms per step
-  MIN_SPEED: 55,
-  SPEED_INCREASE: 3,    // ms faster per food eaten
+  INITIAL_SPEED: 200,   // ms per step — start slow, ramp up
+  MIN_SPEED: 70,
+  SPEED_INCREASE: 2,    // ms faster per food eaten — gentler ramp
   SCORE_PER_FOOD: 100,
   BOOST_DURATION: 1500, // ms
-  TILT_THRESHOLD: 8,    // degrees to register a direction change
+  TILT_THRESHOLD: 12,   // degrees to register — higher = less accidental turns
 };
 
 type Dir = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
