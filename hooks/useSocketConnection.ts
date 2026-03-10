@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
+import { useP2PConnection } from './useP2PConnection';
 
 export function useSocketConnection() {
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -37,10 +38,15 @@ export function useSocketConnection() {
     };
   }, []);
 
+  // 4. Attempt WebRTC P2P once socket + roomId are ready
+  // (useP2PConnection only runs when both are non-null/non-empty)
+  const { p2pActive } = useP2PConnection(socket, roomId);
+
   return {
     socket,
     roomId,
     joinLink,
-    isControllerConnected
+    isControllerConnected,
+    p2pActive,
   };
 }

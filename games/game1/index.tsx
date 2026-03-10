@@ -1,44 +1,35 @@
-// games/game1/index.tsx
+// games/game1/index.tsx — Rocket Shooter (Enhanced)
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
-import { GyroData } from '@/types/game'; // 這是全域唯一的，不用改
+import { GyroData } from '@/types/game';
 
 // ==========================================
-// 1. 遊戲參數設定 (Configuration)
+// 1. Configuration
 // ==========================================
 const GAME_CONFIG = {
-  // --- 畫布設定 ---
-  WIDTH: 800,         // 遊戲邏輯寬度
-  HEIGHT: 600,        // 遊戲邏輯高度
-
-  // --- 玩家 (飛機) ---
-  PLAYER_SIZE: 50,    // 飛機大小 (px)
-  PLAYER_SPEED: 15,   // 陀螺儀靈敏度 (數字越大動越快)
-
-  // --- 子彈 & 開火設定 ---
-  BULLET_W: 8,
-  BULLET_H: 20,
-  BULLET_SPEED: 18,
-  INITIAL_FIRE_RATE: 800, // 初始開火間隔 (ms) - 慢
-  MIN_FIRE_RATE: 150,     // 最快開火間隔 (ms) - 快
-
-  // --- 障礙物 (隕石) ---
-  OBSTACLE_SIZE: 40,
-  INITIAL_OBSTACLE_SPEED: 1,  // 初始速度 (變慢)
-  SPAWN_RATE: 300,
-
-  // --- 道具 (PowerUp) ---
+  WIDTH: 800,
+  HEIGHT: 600,
+  PLAYER_SIZE: 50,
+  PLAYER_SPEED: 15,
+  BULLET_W: 6,
+  BULLET_H: 22,
+  BULLET_SPEED: 20,
+  INITIAL_FIRE_RATE: 700,
+  MIN_FIRE_RATE: 120,
+  OBSTACLE_SIZE: 42,
+  INITIAL_OBSTACLE_SPEED: 2,
+  SPAWN_RATE: 280,
   POWERUP_SIZE: 30,
   POWERUP_SPEED: 4,
-  POWERUP_CHANCE: 0.15, // 15% 機率生成
-
-  // --- 分數 ---
+  POWERUP_CHANCE: 0.15,
   SCORE_PER_HIT: 100,
+  // Stars
+  STAR_COUNT: 80,
 };
 
 // ==========================================
-// 2. 內部型別定義 (Types)
+// 2. Types
 // ==========================================
 interface Entity {
   id: string;
@@ -47,7 +38,26 @@ interface Entity {
   width: number;
   height: number;
   active: boolean;
-  type?: 'METEOR' | 'POWERUP_RATE'; // 區分實體類型
+  type?: string;
+}
+
+interface Particle {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number; // 0..1
+  color: string;
+}
+
+interface Star {
+  id: string;
+  x: number;
+  y: number;
+  size: number;
+  speed: number;
+  opacity: number;
 }
 
 interface Player extends Entity {
@@ -57,46 +67,53 @@ interface Player extends Entity {
 interface GameState {
   player: Player;
   bullets: Entity[];
-  obstacles: Entity[]; // 包含隕石
-  powerUps: Entity[];  // 獨立管理道具
+  obstacles: Entity[];
+  powerUps: Entity[];
+  particles: Particle[];
+  stars: Star[];
   status: 'READY' | 'PLAYING' | 'GAME_OVER';
-  fireRate: number;    // 當前開火間隔
-  startTime: number;   // 遊戲開始時間 (用於難度計算)
+  fireRate: number;
+  startTime: number;
 }
 
 // ==========================================
-// 3. 遊戲邏輯 Hook (Logic)
+// 3. Logic Hook
 // ==========================================
 function useGameLogic(paused: boolean = false) {
-  // 初始狀態
+  const createStars = (): Star[] =>
+    Array.from({ length: GAME_CONFIG.STAR_COUNT }, () => ({
+      id: uuidv4(),
+      x: Math.random() * GAME_CONFIG.WIDTH - GAME_CONFIG.WIDTH / 2,
+      y: Math.random() * GAME_CONFIG.HEIGHT - GAME_CONFIG.HEIGHT / 2,
+      size: Math.random() * 2.5 + 0.5,
+      speed: Math.random() * 1.5 + 0.5,
+      opacity: Math.random() * 0.7 + 0.3,
+    }));
+
   const getInitialState = (): GameState => ({
     player: {
-      id: 'p1',
-      x: 0, y: 0,
+      id: 'p1', x: 0, y: 0,
       width: GAME_CONFIG.PLAYER_SIZE,
       height: GAME_CONFIG.PLAYER_SIZE,
-      active: true,
-      score: 0
+      active: true, score: 0
     },
     bullets: [],
     obstacles: [],
     powerUps: [],
+    particles: [],
+    stars: createStars(),
     status: 'READY',
     fireRate: GAME_CONFIG.INITIAL_FIRE_RATE,
     startTime: 0
   });
 
   const [gameState, setGameState] = useState<GameState>(getInitialState());
-
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
 
-  // 輸入狀態: moveX, moveY, isFiring (持續按壓)
   const inputRef = useRef({ moveX: 0, moveY: 0, isFiring: false });
-  // 用於計算冷卻
   const lastFireTimeRef = useRef(0);
 
-  // [Action] 更新陀螺儀輸入
   const updateGyro = useCallback((data: GyroData) => {
     if (data.beta !== null && data.gamma !== null) {
       inputRef.current.moveX = (data.gamma / 30) * GAME_CONFIG.PLAYER_SPEED;
@@ -104,12 +121,10 @@ function useGameLogic(paused: boolean = false) {
     }
   }, []);
 
-  // [Action] 處理開火 (Start/End)
   const setFiring = useCallback((firing: boolean) => {
     inputRef.current.isFiring = firing;
   }, []);
 
-  // [Action] 開始遊戲
   const startGame = useCallback(() => {
     setGameState(prev => ({
       ...prev,
@@ -120,162 +135,156 @@ function useGameLogic(paused: boolean = false) {
     lastFireTimeRef.current = 0;
   }, []);
 
-  // [Action] 重置遊戲
   const resetGame = useCallback(() => {
     setGameState(getInitialState());
   }, []);
 
-  // [Core] 物理運算主迴圈
   useEffect(() => {
     let loopId: number;
     let spawnTimer = 0;
 
     const loop = () => {
-      // 只有在 PLAYING 狀態 且 沒有暫停 才計算物理
       if (stateRef.current.status === 'PLAYING' && !paused) {
         const current = stateRef.current;
         const input = inputRef.current;
         const now = Date.now();
 
-        // 0. 計算難度係數 (每 10秒 + 0.5 速度, 這裡簡單用時間差)
-        // 遊戲時間 (秒)
         const gameTime = (now - current.startTime) / 1000;
-        const difficultyLevel = Math.floor(gameTime / 10); // 每10秒一級
+        const difficultyLevel = Math.floor(gameTime / 10);
+        const currentObstacleSpeed = GAME_CONFIG.INITIAL_OBSTACLE_SPEED + difficultyLevel * 0.6;
+        const currentSpawnRate = Math.max(150, GAME_CONFIG.SPAWN_RATE - difficultyLevel * 25);
 
-        // 速度隨著難度增加: 初始 3, 每級 + 0.5
-        const currentObstacleSpeed = GAME_CONFIG.INITIAL_OBSTACLE_SPEED + (difficultyLevel * 0.5);
-        // 生成頻率隨著難度變快: 初始 800, 每級 - 30ms (最低 200)
-        const currentSpawnRate = Math.max(200, GAME_CONFIG.SPAWN_RATE - (difficultyLevel * 30));
-
-        // --- A. 計算玩家位置 ---
+        // Player movement
         let newPx = current.player.x + input.moveX;
         let newPy = current.player.y + input.moveY;
-
         const limitX = GAME_CONFIG.WIDTH / 2 - GAME_CONFIG.PLAYER_SIZE / 2;
         const limitY = GAME_CONFIG.HEIGHT / 2 - GAME_CONFIG.PLAYER_SIZE / 2;
         newPx = Math.max(-limitX, Math.min(limitX, newPx));
         newPy = Math.max(-limitY, Math.min(limitY, newPy));
 
-        // --- B. 處理自動開火 ---
+        // Bullets
         const newBullets = [...current.bullets];
-        if (input.isFiring) {
-          if (now - lastFireTimeRef.current >= current.fireRate) {
-            newBullets.push({
-              id: uuidv4(),
-              x: newPx,
-              y: newPy - 30,
-              width: GAME_CONFIG.BULLET_W,
-              height: GAME_CONFIG.BULLET_H,
-              active: true
-            });
-            lastFireTimeRef.current = now;
-          }
+        if (input.isFiring && now - lastFireTimeRef.current >= current.fireRate) {
+          newBullets.push({
+            id: uuidv4(),
+            x: newPx,
+            y: newPy - 30,
+            width: GAME_CONFIG.BULLET_W,
+            height: GAME_CONFIG.BULLET_H,
+            active: true
+          });
+          lastFireTimeRef.current = now;
         }
-
-        // --- C. 移動子彈 ---
         for (let b of newBullets) {
           b.y -= GAME_CONFIG.BULLET_SPEED;
           if (b.y < -GAME_CONFIG.HEIGHT / 2) b.active = false;
         }
 
-        // --- D. 生成物體 (隕石 或 道具) ---
+        // Spawn
         spawnTimer += 16;
         const newObstacles = [...current.obstacles];
         const newPowerUps = [...current.powerUps];
-
         if (spawnTimer > currentSpawnRate) {
           spawnTimer = 0;
-          const randomX = (Math.random() * GAME_CONFIG.WIDTH) - (GAME_CONFIG.WIDTH / 2);
-
-          // 判斷生成 道具 還是 隕石
+          const randomX = Math.random() * GAME_CONFIG.WIDTH - GAME_CONFIG.WIDTH / 2;
           if (Math.random() < GAME_CONFIG.POWERUP_CHANCE) {
-            // Spawn PowerUp
             newPowerUps.push({
-              id: uuidv4(),
-              x: randomX,
+              id: uuidv4(), x: randomX,
               y: -GAME_CONFIG.HEIGHT / 2 - 50,
               width: GAME_CONFIG.POWERUP_SIZE,
               height: GAME_CONFIG.POWERUP_SIZE,
-              active: true,
-              type: 'POWERUP_RATE'
+              active: true, type: 'POWERUP_RATE'
             });
           } else {
-            // Spawn Meteor
             newObstacles.push({
-              id: uuidv4(),
-              x: randomX,
+              id: uuidv4(), x: randomX,
               y: -GAME_CONFIG.HEIGHT / 2 - 50,
-              width: GAME_CONFIG.OBSTACLE_SIZE,
-              height: GAME_CONFIG.OBSTACLE_SIZE,
-              active: true,
-              type: 'METEOR'
+              width: GAME_CONFIG.OBSTACLE_SIZE + (Math.random() * 20 - 10),
+              height: GAME_CONFIG.OBSTACLE_SIZE + (Math.random() * 20 - 10),
+              active: true, type: 'METEOR'
             });
           }
         }
 
-        // --- E. 移動物體 ---
-        // 隕石移動
         for (let o of newObstacles) {
           o.y += currentObstacleSpeed;
           if (o.y > GAME_CONFIG.HEIGHT / 2) o.active = false;
         }
-        // 道具移動 (稍微慢一點或是跟隕石一樣)
         for (let p of newPowerUps) {
           p.y += GAME_CONFIG.POWERUP_SPEED;
           if (p.y > GAME_CONFIG.HEIGHT / 2) p.active = false;
         }
 
-        // --- F. 碰撞檢測 ---
+        // Stars scrolling
+        const newStars = current.stars.map(s => {
+          let ny = s.y + s.speed * (1 + currentObstacleSpeed * 0.3);
+          if (ny > GAME_CONFIG.HEIGHT / 2) ny = -GAME_CONFIG.HEIGHT / 2;
+          return { ...s, y: ny };
+        });
+
+        // Collisions
         let scoreToAdd = 0;
         let isGameOver = false;
         let newFireRate = current.fireRate;
+        const newParticles = [...current.particles];
 
-        // F1. 子彈 vs 隕石
+        // Bullet vs meteor
         for (let b of newBullets) {
           if (!b.active) continue;
           for (let o of newObstacles) {
             if (!o.active) continue;
-            // AABB
-            if (
-              b.x < o.x + o.width && b.x + b.width > o.x &&
-              b.y < o.y + o.height && b.height + b.y > o.y
-            ) {
+            if (b.x < o.x + o.width && b.x + b.width > o.x &&
+              b.y < o.y + o.height && b.height + b.y > o.y) {
               b.active = false;
               o.active = false;
               scoreToAdd += GAME_CONFIG.SCORE_PER_HIT;
+              // Spawn explosion particles
+              const colors = ['#f97316', '#ef4444', '#fbbf24', '#fb923c', '#fff'];
+              for (let i = 0; i < 12; i++) {
+                const angle = (Math.PI * 2 * i) / 12 + Math.random() * 0.5;
+                const speed = Math.random() * 4 + 2;
+                newParticles.push({
+                  id: uuidv4(),
+                  x: o.x, y: o.y,
+                  vx: Math.cos(angle) * speed,
+                  vy: Math.sin(angle) * speed,
+                  life: 1,
+                  color: colors[Math.floor(Math.random() * colors.length)]
+                });
+              }
             }
           }
         }
 
-        // F2. 玩家 vs 隕石
+        // Player vs meteor
         const playerRect = { ...current.player, x: newPx, y: newPy };
         for (let o of newObstacles) {
-          if (o.active) {
-            if (
-              playerRect.x < o.x + o.width && playerRect.x + playerRect.width > o.x &&
-              playerRect.y < o.y + o.height && playerRect.height + playerRect.y > o.y
-            ) {
-              isGameOver = true;
-            }
+          if (o.active &&
+            playerRect.x < o.x + o.width && playerRect.x + playerRect.width > o.x &&
+            playerRect.y < o.y + o.height && playerRect.height + playerRect.y > o.y) {
+            isGameOver = true;
           }
         }
 
-        // F3. 玩家 vs 道具
+        // Player vs powerup
         for (let p of newPowerUps) {
-          if (p.active) {
-            if (
-              playerRect.x < p.x + p.width && playerRect.x + playerRect.width > p.x &&
-              playerRect.y < p.y + p.height && playerRect.height + playerRect.y > p.y
-            ) {
-              p.active = false;
-              scoreToAdd += 500; // 吃道具加分
-              // 增加射速 (減少間隔)，設定上限
-              newFireRate = Math.max(GAME_CONFIG.MIN_FIRE_RATE, newFireRate * 0.9); // 每次加快 10%
-            }
+          if (p.active &&
+            playerRect.x < p.x + p.width && playerRect.x + playerRect.width > p.x &&
+            playerRect.y < p.y + p.height && playerRect.height + playerRect.y > p.y) {
+            p.active = false;
+            scoreToAdd += 500;
+            newFireRate = Math.max(GAME_CONFIG.MIN_FIRE_RATE, newFireRate * 0.9);
           }
         }
 
-        // --- G. 更新所有狀態 ---
+        // Age particles
+        for (let p of newParticles) {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vy += 0.1; // gravity
+          p.life -= 0.04;
+        }
+
         setGameState(prev => ({
           ...prev,
           status: isGameOver ? 'GAME_OVER' : 'PLAYING',
@@ -283,10 +292,11 @@ function useGameLogic(paused: boolean = false) {
           bullets: newBullets.filter(b => b.active),
           obstacles: newObstacles.filter(o => o.active),
           powerUps: newPowerUps.filter(p => p.active),
+          particles: newParticles.filter(p => p.life > 0),
+          stars: newStars,
           fireRate: newFireRate
         }));
       }
-
       loopId = requestAnimationFrame(loop);
     };
 
@@ -298,7 +308,7 @@ function useGameLogic(paused: boolean = false) {
 }
 
 // ==========================================
-// 4. 主視圖組件 (View)
+// 4. View
 // ==========================================
 interface Props {
   socket: Socket;
@@ -312,147 +322,138 @@ interface Props {
   settings?: any;
 }
 
-export default function Game1({
-  socket,
-  roomId,
-  onExit,
-  paused = false,
-  onPause,
-  onResume,
-  onScoreChange,
-  onStatusChange
-}: Props) {
-  // 引入邏輯
+export default function Game1({ socket, roomId, onExit, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
   const { gameState, updateGyro, setFiring, startGame, resetGame } = useGameLogic(paused);
-  const { player, bullets, obstacles, powerUps, status } = gameState;
+  const { player, bullets, obstacles, powerUps, particles, stars, status } = gameState;
 
-  // Sync Score Effect [NEW]
-  useEffect(() => {
-    if (onScoreChange) {
-      onScoreChange(player.score);
-    }
-  }, [player.score, onScoreChange]);
+  useEffect(() => { if (onScoreChange) onScoreChange(player.score); }, [player.score, onScoreChange]);
+  useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
 
-  // Sync Status Effect [NEW] (Ideally useGameLogic calls this, but useEffect is fine for now)
   useEffect(() => {
-    if (onStatusChange) {
-      onStatusChange(status);
-    }
-  }, [status, onStatusChange]);
-
-  // 連接 Socket
-  useEffect(() => {
-    // 接收陀螺儀數據
     const handleGyro = (data: GyroData) => updateGyro(data);
-
-    // 接收操作指令
     const handleAction = (payload: any) => {
       const action = typeof payload === 'string' ? payload : payload.action;
-
       if (action === 'fire-start') setFiring(true);
       if (action === 'fire-end') setFiring(false);
       if (action === 'shoot') setFiring(true);
-
       if (action === 'start-game') startGame();
-      if (action === 'pause') if (onPause) onPause();
-      if (action === 'resume') if (onResume) onResume();
+      if (action === 'pause') onPause?.();
+      if (action === 'resume') onResume?.();
       if (action === 'restart-game') resetGame();
     };
-
     socket.on('update-game-state', handleGyro);
     socket.on('controller-action', handleAction);
     socket.emit('sync-game-status', { roomId, status });
-
     return () => {
       socket.off('update-game-state');
       socket.off('controller-action');
     };
   }, [socket, updateGyro, setFiring, startGame, resetGame, status, onPause, onResume, roomId]);
 
+  const gameTime = status === 'PLAYING' ? (Date.now() - gameState.startTime) / 1000 : 0;
+  const difficultyLevel = Math.floor(gameTime / 10);
+
   return (
-    <div className="relative w-full h-screen bg-slate-900 overflow-hidden flex items-center justify-center font-mono select-none">
+    <div className="relative w-full h-screen overflow-hidden flex items-center justify-center font-mono select-none"
+      style={{ background: 'linear-gradient(180deg, #050815 0%, #0f0f2e 50%, #1a0a2e 100%)' }}>
 
-      {/* --- UI 層 (退出按鈕 - 仍保留在遊戲內還是移出? User said "game over ready mask", not exit button. Leave it for now or move it if instructed. User said "settings backtolobby" needs to move out. Exit button is redundant with Settings Panel probably.) 
-          User said: "game1 中的 monilecontorller 中 除了 fire button 以外 其他設定 backtoobby 等等 也要移到最外面"
-          For Desktop: "game over ready 遮罩 移到最外層"
-          The exit button is kind of part of the "HUD". Keep it for now unless it conflicts. 
-      */}
-      {/* 
-      <div className="absolute top-6 left-6 z-50">
-        <button onClick={onExit} ... > EXIT GAME </button> 
-      </div>
-      Actually let's keep the visual only essentials.
-      */}
+      {/* Difficulty indicator */}
+      {status === 'PLAYING' && difficultyLevel > 0 && (
+        <div className="absolute top-4 right-4 z-20 text-xs font-bold text-purple-400 bg-purple-900/40 px-3 py-1 rounded-full border border-purple-500/30">
+          LVL {difficultyLevel + 1}
+        </div>
+      )}
 
-      {/* --- 遊戲渲染層 --- */}
       <div className="relative w-full h-full">
+        {/* Stars */}
+        {stars.map(s => (
+          <div key={s.id} className="absolute rounded-full bg-white"
+            style={{
+              width: s.size, height: s.size,
+              left: '50%', top: '50%',
+              transform: `translate(${s.x}px, ${s.y}px)`,
+              opacity: s.opacity
+            }} />
+        ))}
 
-        {/* 1. 玩家 (Cyan Triangle) */}
-        <div
-          className="absolute bg-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.8)] z-10"
-          style={{
-            width: player.width,
-            height: player.height,
-            left: '50%',
-            top: '50%',
-            transform: `translate(${player.x - player.width / 2}px, ${player.y - player.height / 2}px)`,
-            clipPath: 'polygon(50% 0%, 0% 100%, 100% 100%)'
-          }}
-        />
-
-        {/* 2. 子彈 (Yellow Pulse) */}
+        {/* Bullets */}
         {bullets.map(b => (
-          <div
-            key={b.id}
-            className="absolute bg-yellow-300 rounded-full shadow-[0_0_10px_rgba(253,224,71,0.8)]"
+          <div key={b.id}
+            className="absolute rounded-full"
             style={{
-              width: b.width,
-              height: b.height,
-              left: '50%',
-              top: '50%',
-              transform: `translate(${b.x - b.width / 2}px, ${b.y - b.height / 2}px)`
-            }}
-          />
+              width: b.width, height: b.height,
+              left: '50%', top: '50%',
+              transform: `translate(${b.x - b.width / 2}px, ${b.y - b.height / 2}px)`,
+              background: 'linear-gradient(180deg, #fff 0%, #fde047 50%, #f97316 100%)',
+              boxShadow: '0 0 12px rgba(253,224,71,0.9)'
+            }} />
         ))}
 
-        {/* 3. 隕石 (Red Block) */}
+        {/* Meteors */}
         {obstacles.map(o => (
-          <div
-            key={o.id}
-            className="absolute bg-red-500 rounded-lg border-b-4 border-red-800 shadow-lg"
+          <div key={o.id}
+            className="absolute rounded-full"
             style={{
-              width: o.width,
-              height: o.height,
-              left: '50%',
-              top: '50%',
-              transform: `translate(${o.x - o.width / 2}px, ${o.y - o.height / 2}px)`
-            }}
-          >
-            <div className="absolute top-2 right-2 w-2 h-2 bg-black/20 rounded-full" />
-            <div className="absolute bottom-3 left-3 w-3 h-3 bg-black/20 rounded-full" />
+              width: o.width, height: o.height,
+              left: '50%', top: '50%',
+              transform: `translate(${o.x - o.width / 2}px, ${o.y - o.height / 2}px) rotate(${o.y * 2}deg)`,
+              background: 'radial-gradient(circle at 35% 35%, #f97316, #7c2d12)',
+              boxShadow: '0 0 8px rgba(249,115,22,0.6), inset -4px -4px 8px rgba(0,0,0,0.5)'
+            }}>
+            <div className="absolute inset-0 rounded-full opacity-30"
+              style={{ background: 'radial-gradient(circle at 70% 70%, rgba(255,255,255,0.3), transparent)' }} />
           </div>
         ))}
 
-        {/* 3.5 道具 (Green/Blue Orb) */}
+        {/* PowerUps */}
         {powerUps.map(p => (
-          <div
-            key={p.id}
-            className="absolute bg-green-400 rounded-full border-4 border-green-200 shadow-[0_0_15px_rgba(74,222,128,0.8)] animate-pulse"
+          <div key={p.id}
+            className="absolute rounded-full animate-pulse"
             style={{
-              width: p.width,
-              height: p.height,
-              left: '50%',
-              top: '50%',
-              transform: `translate(${p.x - p.width / 2}px, ${p.y - p.height / 2}px)`
-            }}
-          >
-            <div className="flex items-center justify-center w-full h-full text-white font-bold text-xs">
-              ⚡
-            </div>
+              width: p.width, height: p.height,
+              left: '50%', top: '50%',
+              transform: `translate(${p.x - p.width / 2}px, ${p.y - p.height / 2}px)`,
+              background: 'radial-gradient(circle, #4ade80, #16a34a)',
+              boxShadow: '0 0 20px rgba(74,222,128,0.9)',
+              border: '2px solid rgba(187,247,208,0.8)'
+            }}>
+            <div className="flex items-center justify-center w-full h-full text-white font-bold text-xs">⚡</div>
           </div>
         ))}
 
-        {/* Overlays Removed from here */}
+        {/* Explosion Particles */}
+        {particles.map(p => (
+          <div key={p.id}
+            className="absolute rounded-full pointer-events-none"
+            style={{
+              width: 6, height: 6,
+              left: '50%', top: '50%',
+              transform: `translate(${p.x - 3}px, ${p.y - 3}px)`,
+              backgroundColor: p.color,
+              opacity: p.life,
+              boxShadow: `0 0 4px ${p.color}`
+            }} />
+        ))}
+
+        {/* Player Ship */}
+        <div
+          className="absolute z-10"
+          style={{
+            width: player.width, height: player.height,
+            left: '50%', top: '50%',
+            transform: `translate(${player.x - player.width / 2}px, ${player.y - player.height / 2}px)`,
+          }}>
+          {/* Engine glow */}
+          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3"
+            style={{ height: 20, background: 'linear-gradient(180deg, #f97316, transparent)', filter: 'blur(4px)', bottom: -16 }} />
+          {/* Ship body */}
+          <div className="w-full h-full"
+            style={{
+              clipPath: 'polygon(50% 0%, 15% 100%, 50% 80%, 85% 100%)',
+              background: 'linear-gradient(180deg, #67e8f9 0%, #0891b2 50%, #164e63 100%)',
+              filter: 'drop-shadow(0 0 12px rgba(34,211,238,0.8))'
+            }} />
+        </div>
       </div>
     </div>
   );

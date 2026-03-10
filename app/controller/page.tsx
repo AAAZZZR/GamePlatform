@@ -16,14 +16,14 @@ function ControllerContent() {
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
   const [gameStatus, setGameStatus] = useState<string>('READY'); // [NEW] Track Global Status
 
-  const { socket, isConnected } = useMobileSocket(room);
+  const { socket, isConnected, sendGyro } = useMobileSocket(room);
 
   const {
     permissionGranted,
     debug,
     requestPermission,
     handleCalibrate
-  } = useGyroController(socket, room);
+  } = useGyroController(socket, room, sendGyro);
 
   // --- 狀態同步 ---
   useEffect(() => {

@@ -52,6 +52,21 @@ app.prepare().then(() => {
     socket.on('sync-game-status', (data: { roomId: string, status: string }) => {
       socket.to(data.roomId).emit('sync-game-status', data.status);
     });
+
+    // ── WebRTC Signaling Relay ──────────────────────────────────────────────
+    // These events are relayed between PC and mobile in the same room.
+    // They enable a P2P DataChannel to bypass the server for gyro data.
+    socket.on('webrtc-offer', (data: { roomId: string; sdp: RTCSessionDescriptionInit }) => {
+      socket.to(data.roomId).emit('webrtc-offer', data.sdp);
+    });
+
+    socket.on('webrtc-answer', (data: { roomId: string; sdp: RTCSessionDescriptionInit }) => {
+      socket.to(data.roomId).emit('webrtc-answer', data.sdp);
+    });
+
+    socket.on('webrtc-ice-candidate', (data: { roomId: string; candidate: RTCIceCandidateInit }) => {
+      socket.to(data.roomId).emit('webrtc-ice-candidate', data.candidate);
+    });
   });
 
   // Handle Next.js routing
