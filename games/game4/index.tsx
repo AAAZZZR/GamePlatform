@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
 import { GyroData } from '@/types/game';
+import { sfx } from '@/platform/audio';
 
 const GAME_CONFIG = {
   COLS: 25,
@@ -91,6 +92,7 @@ function useGameLogic(paused: boolean = false) {
     }
 
     if (newDir && newDir !== stateRef.current.nextDir) {
+      sfx.turn();
       setGameState(prev => ({ ...prev, nextDir: newDir as Dir }));
     }
   }, []);
@@ -169,6 +171,7 @@ function useGameLogic(paused: boolean = false) {
       const newParticles = [...particles];
 
       if (ate) {
+        if (food.special) sfx.eatSpecial(); else sfx.eat();
         newScore += food.special ? GAME_CONFIG.SCORE_PER_FOOD * 3 : GAME_CONFIG.SCORE_PER_FOOD;
         newFood = randomFood(newSnake);
         newSpeed = Math.max(GAME_CONFIG.MIN_SPEED, current.speed - GAME_CONFIG.SPEED_INCREASE);
@@ -240,7 +243,7 @@ export default function Game4({ socket, roomId, paused = false, onPause, onResum
     const handleGyro = (data: GyroData) => updateGyro(data);
     const handleAction = (payload: any) => {
       const action = typeof payload === 'string' ? payload : payload.action;
-      if (action === 'boost-start') setBoost(true);
+      if (action === 'boost-start') { setBoost(true); sfx.snakeBoost(); }
       if (action === 'boost-end') setBoost(false);
       if (action === 'start-game') startGame();
       if (action === 'restart-game') resetGame();

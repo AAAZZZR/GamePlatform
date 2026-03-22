@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
 import { GyroData } from '@/types/game';
+import { sfx } from '@/platform/audio';
 
 const GAME_CONFIG = {
   WIDTH: 800,
@@ -165,10 +166,14 @@ function useGameLogic(paused: boolean = false) {
             y <= GAME_CONFIG.PADDLE_Y + GAME_CONFIG.PADDLE_HEIGHT && vy > 0) {
             vy = -Math.abs(vy);
             vx = ((x - newPaddleX) / (current.paddleWidth / 2)) * GAME_CONFIG.BALL_SPEED;
+            sfx.paddleHit();
           }
 
           // Dead
-          if (y > GAME_CONFIG.HEIGHT + 20) return { ...ball, active: false };
+          if (y > GAME_CONFIG.HEIGHT + 20) {
+            sfx.ballLost();
+            return { ...ball, active: false };
+          }
           return { ...ball, x, y, vx, vy };
         });
 
@@ -187,11 +192,13 @@ function useGameLogic(paused: boolean = false) {
               if (ball.fireball) {
                 b.active = false;
                 scoreAdd += GAME_CONFIG.SCORE_PER_BRICK;
+                sfx.brickBreak(b.row);
               } else {
                 b.hp--;
                 if (b.hp <= 0) {
                   b.active = false;
                   scoreAdd += GAME_CONFIG.SCORE_PER_BRICK;
+                  sfx.brickBreak(b.row);
                   // Spawn power-up 20% chance
                   if (Math.random() < 0.2) {
                     const types: PowerUp['type'][] = ['WIDE', 'MULTIBALL', 'FIREBALL', 'FAST'];
@@ -223,6 +230,7 @@ function useGameLogic(paused: boolean = false) {
           const pRight = newPaddleX + current.paddleWidth / 2;
           if (p.x >= pLeft && p.x <= pRight && p.y >= GAME_CONFIG.PADDLE_Y && p.y <= GAME_CONFIG.PADDLE_Y + GAME_CONFIG.PADDLE_HEIGHT) {
             p.active = false;
+            sfx.powerup();
             if (p.type === 'WIDE') {
               // paddle expand handled in state update below
             } else if (p.type === 'MULTIBALL') {
@@ -262,6 +270,7 @@ function useGameLogic(paused: boolean = false) {
         } else if (allBricksGone) {
           // Next level!
           newLevel = current.level + 1;
+          sfx.levelUp();
           nextBricks = createBricksForLevel(newLevel);
           nextPaddleWidth = GAME_CONFIG.PADDLE_WIDTH; // reset paddle
           newStatus = 'READY';

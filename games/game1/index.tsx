@@ -6,6 +6,7 @@ import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { v4 as uuidv4 } from 'uuid';
 import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
+import { sfx } from '@/platform/audio';
 
 // ==========================================
 // 1. Configuration
@@ -149,6 +150,7 @@ function useGameLogic(
         if (input.actions.fire && now - lastFireTimeRef.current >= s.fireRate) {
           bullets.push({ id: uuidv4(), x: px, y: py - 30, width: CFG.BULLET_W, height: CFG.BULLET_H, active: true });
           lastFireTimeRef.current = now;
+          sfx.shoot();
         }
         for (const b of bullets) { b.y -= CFG.BULLET_SPEED; if (b.y < -halfH - 30) b.active = false; }
 
@@ -192,6 +194,7 @@ function useGameLogic(
               b.active = false;
               o.active = false;
               scoreAdd += CFG.SCORE_PER_HIT;
+              sfx.explosion();
               for (let i = 0; i < 12; i++) {
                 const angle = (Math.PI * 2 * i) / 12 + Math.random() * 0.5;
                 const spd = Math.random() * 4 + 2;
@@ -220,6 +223,7 @@ function useGameLogic(
             p.active = false;
             scoreAdd += 500;
             fireRate = Math.max(CFG.MIN_FIRE_RATE, fireRate * 0.9);
+            sfx.powerup();
           }
         }
 

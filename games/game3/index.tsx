@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
 import { GyroData } from '@/types/game';
+import { sfx } from '@/platform/audio';
 
 const GAME_CONFIG = {
   WIDTH: 800,
@@ -169,6 +170,7 @@ function useGameLogic(paused: boolean = false) {
             Math.abs(0 - relY) < (GAME_CONFIG.CAR_HEIGHT / 2 + coin.height / 2)) {
             coin.active = false;
             coinsAdd++;
+            sfx.coin();
           }
         }
 
@@ -179,6 +181,8 @@ function useGameLogic(paused: boolean = false) {
           opacity: input.nitro ? Math.min(sl.opacity + 0.1, 0.7) : Math.max(sl.opacity - 0.05, 0),
           ...(sl.y > GAME_CONFIG.HEIGHT ? { y: 0, x: Math.random() * GAME_CONFIG.WIDTH } : {})
         }));
+
+        if (isGameOver) sfx.crash();
 
         setGameState(prev => ({
           ...prev,
@@ -227,8 +231,8 @@ export default function Game3({ socket, roomId, paused = false, onPause, onResum
     const handleGyro = (data: GyroData) => updateGyro(data);
     const handleAction = (payload: any) => {
       const action = typeof payload === 'string' ? payload : payload.action;
-      if (action === 'nitro-start') setNitro(true);
-      if (action === 'nitro-end') setNitro(false);
+      if (action === 'nitro-start') { setNitro(true); sfx.nitroOn(); }
+      if (action === 'nitro-end') { setNitro(false); sfx.nitroOff(); }
       if (action === 'start-game') startGame();
       if (action === 'restart-game') resetGame();
       if (action === 'pause') onPause?.();

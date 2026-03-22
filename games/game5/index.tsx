@@ -1,448 +1,861 @@
-// games/game5/index.tsx — Asteroid Dodge 🌌
-import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Socket } from 'socket.io-client';
-import { v4 as uuidv4 } from 'uuid';
-import { GyroData } from '@/types/game';
+// games/game5/index.tsx — Tilt to Live (Arena Survival)
+'use client';
 
-const GAME_CONFIG = {
-  WIDTH: 800,
-  HEIGHT: 600,
-  SHIP_W: 44,
-  SHIP_H: 54,
-  PLAYER_SPEED: 8,
-  INITIAL_ASTEROID_SPEED: 1.8,
-  SCROLL_SPEED: 2,
-  COIN_SIZE: 22,
-  COIN_SCORE: 25,
-  STAR_COUNT: 60,
-  DASH_DISTANCE: 120,
-  DASH_COOLDOWN: 1500,
+import React, { useEffect, useState, useRef, useCallback, MutableRefObject } from 'react';
+import { v4 as uuidv4 } from 'uuid';
+import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
+import { sfx } from '@/platform/audio';
+
+// ==========================================
+// 1. Configuration
+// ==========================================
+const CFG = {
+  PLAYER_SIZE: 18,
+  PLAYER_HITBOX: 10,
+  ENEMY_SIZE: 14,
+  ENEMY_HITBOX: 10,
+  ENEMY_BASE_SPEED: 0.6,
+  ENEMY_SPEED_RAMP: 0.08,
+  INITIAL_SPAWN_INTERVAL: 2200,
+  MIN_SPAWN_INTERVAL: 600,
+  SPAWN_INTERVAL_RAMP: 120,
+  INITIAL_WAVE_SIZE: 2,
+  MAX_WAVE_SIZE: 8,
+  POWERUP_SIZE: 20,
+  POWERUP_HITBOX: 16,
+  POWERUP_SPAWN_INTERVAL: 6000,
+  POWERUP_MIN_INTERVAL: 3500,
+  MISSILE_SPEED: 8,
+  MISSILE_SIZE: 6,
+  MISSILE_COUNT: 10,
+  FREEZE_DURATION: 3000,
+  VORTEX_DURATION: 2000,
+  VORTEX_RADIUS: 160,
+  SCORE_PER_KILL: 10,
+  SCORE_PER_SECOND: 1,
+  DIFFICULTY_INTERVAL: 10,
+  GRID_SIZE: 50,
+  PARTICLE_COUNT: 8,
 };
 
-interface Entity {
+// ==========================================
+// 2. Types
+// ==========================================
+type PowerupType = 'missile' | 'nuke' | 'freeze' | 'vortex';
+
+interface Vec2 { x: number; y: number; }
+
+interface Enemy {
   id: string;
   x: number;
   y: number;
-  width: number;
-  height: number;
+  vx: number;
+  vy: number;
+  frozen: boolean;
   active: boolean;
-  type?: string;
-  speed?: number;
-  rotation?: number;
-  rotationSpeed?: number;
 }
 
-interface Star { id: string; x: number; y: number; size: number; speed: number; }
-interface Particle { id: string; x: number; y: number; vx: number; vy: number; life: number; color: string; }
+interface Powerup {
+  id: string;
+  x: number;
+  y: number;
+  type: PowerupType;
+  active: boolean;
+  spawnTime: number;
+}
+
+interface Missile {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  active: boolean;
+}
+
+interface Particle {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
+  size: number;
+}
+
+interface VortexEffect {
+  x: number;
+  y: number;
+  startTime: number;
+  duration: number;
+}
+
+interface FlashEffect {
+  x: number;
+  y: number;
+  startTime: number;
+  color: string;
+}
 
 interface GameState {
-  playerX: number;
-  asteroids: Entity[];
-  coins: Entity[];
-  stars: Star[];
+  player: Vec2;
+  enemies: Enemy[];
+  powerups: Powerup[];
+  missiles: Missile[];
   particles: Particle[];
-  shield: number;     // 0 = none, 1 = active
-  slowmo: boolean;
-  magnet: boolean;
-  status: 'READY' | 'PLAYING' | 'GAME_OVER';
+  status: GameStatus;
   score: number;
-  coinsCollected: number;
-  gameTime: number;
-  dashCooldown: number;   // ms remaining
-  lastDashTime: number;
+  startTime: number;
+  lastSpawnTime: number;
+  lastPowerupTime: number;
+  lastScoreTickTime: number;
+  difficultyLevel: number;
+  frozenUntil: number;
+  vortex: VortexEffect | null;
+  nukeFlash: number;
+  flashes: FlashEffect[];
 }
 
-function createStars(): Star[] {
-  return Array.from({ length: GAME_CONFIG.STAR_COUNT }, () => ({
-    id: uuidv4(),
-    x: Math.random() * GAME_CONFIG.WIDTH,
-    y: Math.random() * GAME_CONFIG.HEIGHT,
-    size: Math.random() * 2 + 0.5,
-    speed: Math.random() * 1.5 + 0.5
-  }));
+// ==========================================
+// 3. Helpers
+// ==========================================
+const POWERUP_COLORS: Record<PowerupType, string> = {
+  missile: '#3b82f6',
+  nuke: '#eab308',
+  freeze: '#22c55e',
+  vortex: '#a855f7',
+};
+
+const POWERUP_LABELS: Record<PowerupType, string> = {
+  missile: 'M',
+  nuke: 'N',
+  freeze: 'F',
+  vortex: 'V',
+};
+
+function dist(a: Vec2, b: Vec2): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
-function useGameLogic(paused: boolean = false) {
-  const getInitialState = (): GameState => ({
-    playerX: GAME_CONFIG.WIDTH / 2,
-    asteroids: [],
-    coins: [],
-    stars: createStars(),
-    particles: [],
-    shield: 0,
-    slowmo: false,
-    magnet: false,
-    status: 'READY',
-    score: 0,
-    coinsCollected: 0,
-    gameTime: 0,
-    dashCooldown: 0,
-    lastDashTime: 0
+function randomEdgePosition(w: number, h: number): Vec2 {
+  const side = Math.floor(Math.random() * 4);
+  const margin = 30;
+  switch (side) {
+    case 0: return { x: Math.random() * w, y: -margin }; // top
+    case 1: return { x: Math.random() * w, y: h + margin }; // bottom
+    case 2: return { x: -margin, y: Math.random() * h }; // left
+    default: return { x: w + margin, y: Math.random() * h }; // right
+  }
+}
+
+function randomArenaPosition(w: number, h: number, margin: number = 60): Vec2 {
+  return {
+    x: margin + Math.random() * (w - margin * 2),
+    y: margin + Math.random() * (h - margin * 2),
+  };
+}
+
+function spawnParticles(x: number, y: number, color: string, count: number = CFG.PARTICLE_COUNT): Particle[] {
+  return Array.from({ length: count }, () => {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 3 + 1.5;
+    return {
+      id: uuidv4(),
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      color,
+      size: Math.random() * 3 + 2,
+    };
   });
+}
 
-  const [gameState, setGameState] = useState<GameState>(getInitialState());
-  const stateRef = useRef(gameState);
-  stateRef.current = gameState;
-  const inputRef = useRef({ moveX: 0, shield: false, dashDir: 0 });
-  const frameTimeRef = useRef(Date.now());
-
-  const updateGyro = useCallback((data: GyroData) => {
-    if (data.gamma !== null)
-      inputRef.current.moveX = (data.gamma / 35) * GAME_CONFIG.PLAYER_SPEED;
-  }, []);
-
-  const activateShield = useCallback(() => {
-    setGameState(prev => {
-      if (prev.shield > 0) return prev;
-      return { ...prev, shield: 1 };
-    });
-    setTimeout(() => setGameState(prev => ({ ...prev, shield: 0 })), 4000);
-  }, []);
-
-  const triggerDash = useCallback((direction: number) => {
-    setGameState(prev => {
-      const now = Date.now();
-      if (now - prev.lastDashTime < GAME_CONFIG.DASH_COOLDOWN) return prev;
-      const newX = Math.max(GAME_CONFIG.SHIP_W / 2, Math.min(
-        GAME_CONFIG.WIDTH - GAME_CONFIG.SHIP_W / 2,
-        prev.playerX + direction * GAME_CONFIG.DASH_DISTANCE
-      ));
-      return { ...prev, playerX: newX, lastDashTime: now, dashCooldown: GAME_CONFIG.DASH_COOLDOWN };
-    });
-    if (navigator.vibrate) navigator.vibrate(40);
-  }, []);
-
-  const startGame = useCallback(() => {
-    setGameState(prev => ({ ...prev, status: 'PLAYING' }));
-  }, []);
-
-  const resetGame = useCallback(() => {
-    setGameState(getInitialState());
-    frameTimeRef.current = Date.now();
-  }, []);
+// ==========================================
+// 4. Game Logic Hook
+// ==========================================
+function useGameLogic(
+  inputRef: MutableRefObject<NormalizedInput>,
+  paused: boolean,
+  callbacks: GameCallbacks
+) {
+  const boundsRef = useRef({ w: 800, h: 600 });
 
   useEffect(() => {
+    const update = () => {
+      boundsRef.current = { w: window.innerWidth, h: window.innerHeight };
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  const getInitialState = useCallback((): GameState => {
+    const { w, h } = boundsRef.current;
+    return {
+      player: { x: w / 2, y: h / 2 },
+      enemies: [],
+      powerups: [],
+      missiles: [],
+      particles: [],
+      status: 'READY',
+      score: 0,
+      startTime: 0,
+      lastSpawnTime: 0,
+      lastPowerupTime: 0,
+      lastScoreTickTime: 0,
+      difficultyLevel: 0,
+      frozenUntil: 0,
+      vortex: null,
+      nukeFlash: 0,
+      flashes: [],
+    };
+  }, []);
+
+  const [gameState, setGameState] = useState<GameState>(getInitialState);
+  const stateRef = useRef(gameState);
+  stateRef.current = gameState;
+
+  const callbacksRef = useRef(callbacks);
+  callbacksRef.current = callbacks;
+
+  // Report score / status
+  useEffect(() => { callbacksRef.current.onScoreChange(gameState.score); }, [gameState.score]);
+  useEffect(() => { callbacksRef.current.onStatusChange(gameState.status); }, [gameState.status]);
+
+  // Game Loop
+  useEffect(() => {
     let loopId: number;
-    let spawnCounter = 0;
+    let prevTime = performance.now();
 
-    const loop = () => {
-      if (stateRef.current.status === 'PLAYING' && !paused) {
-        const current = stateRef.current;
-        const input = inputRef.current;
+    const loop = (currentTime: number) => {
+      const dt = Math.min((currentTime - prevTime) / 16.667, 3); // normalize to ~60fps, cap at 3x
+      prevTime = currentTime;
+
+      const input = inputRef.current;
+      const s = stateRef.current;
+      const { w, h } = boundsRef.current;
+
+      // ── Lifecycle actions ──
+      if (s.status === 'READY' && input.actions['start-game']) {
         const now = Date.now();
-        const dt = Math.min(now - frameTimeRef.current, 33);
-        frameTimeRef.current = now;
-
-        const difficultyLevel = Math.floor(current.gameTime / 20); // slower ramp
-        const asteroidSpeed = GAME_CONFIG.INITIAL_ASTEROID_SPEED + difficultyLevel * 0.3;
-        const slowFactor = current.slowmo ? 0.5 : 1;
-
-        // Player movement
-        let newX = current.playerX + input.moveX * slowFactor;
-        newX = Math.max(GAME_CONFIG.SHIP_W / 2, Math.min(GAME_CONFIG.WIDTH - GAME_CONFIG.SHIP_W / 2, newX));
-
-        // Stars
-        const newStars = current.stars.map(s => {
-          let ny = s.y + s.speed * slowFactor;
-          if (ny > GAME_CONFIG.HEIGHT) ny = -10;
-          return { ...s, y: ny };
-        });
-
-        // Spawn asteroids & coins
-        spawnCounter += dt;
-        const newAsteroids = [...current.asteroids];
-        const newCoins = [...current.coins];
-        const spawnInterval = Math.max(800 - difficultyLevel * 60, 300);
-
-        if (spawnCounter > spawnInterval) {
-          spawnCounter = 0;
-          const numToSpawn = 1 + Math.floor(difficultyLevel / 3);
-          for (let i = 0; i < numToSpawn; i++) {
-            const x = Math.random() * (GAME_CONFIG.WIDTH - 60) + 30;
-            const size = Math.random() * 30 + 30;
-            newAsteroids.push({
-              id: uuidv4(), x, y: -size,
-              width: size, height: size, active: true,
-              speed: (Math.random() * 2 + asteroidSpeed) * slowFactor,
-              rotation: 0,
-              rotationSpeed: (Math.random() - 0.5) * 4
-            });
-          }
-          if (Math.random() < 0.4) {
-            newCoins.push({
-              id: uuidv4(),
-              x: Math.random() * (GAME_CONFIG.WIDTH - 40) + 20,
-              y: -GAME_CONFIG.COIN_SIZE,
-              width: GAME_CONFIG.COIN_SIZE, height: GAME_CONFIG.COIN_SIZE,
-              active: true,
-              speed: 3 * slowFactor
-            });
-          }
-        }
-
-        // Move asteroids
-        for (const a of newAsteroids) {
-          a.y += (a.speed || asteroidSpeed) * slowFactor;
-          a.rotation = (a.rotation || 0) + (a.rotationSpeed || 0);
-          if (a.y > GAME_CONFIG.HEIGHT + 60) a.active = false;
-        }
-
-        // Move coins (magnet attraction)
-        for (const c of newCoins) {
-          if (current.magnet) {
-            const dx = newX - c.x;
-            c.x += dx * 0.1;
-            c.y += (c.speed || 3);
-          } else {
-            c.y += (c.speed || 3) * slowFactor;
-          }
-          if (c.y > GAME_CONFIG.HEIGHT + 30) c.active = false;
-        }
-
-        // Collisions
-        let isGameOver = false;
-        let coinsAdd = 0;
-        const newParticles = [...current.particles];
-        const playerLeft = newX - GAME_CONFIG.SHIP_W / 2;
-        const playerRight = newX + GAME_CONFIG.SHIP_W / 2;
-        const playerTop = GAME_CONFIG.HEIGHT - 80 - GAME_CONFIG.SHIP_H / 2;
-        const playerBot = GAME_CONFIG.HEIGHT - 80 + GAME_CONFIG.SHIP_H / 2;
-
-        for (const a of newAsteroids) {
-          if (!a.active) continue;
-          if (a.x + a.width / 2 > playerLeft && a.x - a.width / 2 < playerRight &&
-            a.y + a.height / 2 > playerTop && a.y - a.height / 2 < playerBot) {
-            a.active = false;
-            if (current.shield > 0) {
-              // Shield absorbs hit
-              setGameState(prev => ({ ...prev, shield: 0 }));
-              // Shockwave particles
-              for (let i = 0; i < 16; i++) {
-                const angle = (Math.PI * 2 * i) / 16;
-                const spd = Math.random() * 5 + 2;
-                newParticles.push({ id: uuidv4(), x: newX, y: GAME_CONFIG.HEIGHT - 80, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd, life: 1, color: '#67e8f9' });
-              }
-            } else {
-              // Explosion
-              for (let i = 0; i < 14; i++) {
-                const angle = (Math.PI * 2 * i) / 14;
-                const spd = Math.random() * 4 + 2;
-                newParticles.push({ id: uuidv4(), x: newX, y: GAME_CONFIG.HEIGHT - 80, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd, life: 1, color: ['#f97316', '#ef4444', '#fbbf24', '#fff'][Math.floor(Math.random() * 4)] });
-              }
-              isGameOver = true;
-            }
-          }
-        }
-
-        // Coin collection
-        for (const c of newCoins) {
-          if (!c.active) continue;
-          if (c.x + c.width / 2 > playerLeft && c.x - c.width / 2 < playerRight &&
-            c.y + c.height / 2 > playerTop && c.y - c.height / 2 < playerBot) {
-            c.active = false;
-            coinsAdd++;
-            // Sparkle
-            for (let i = 0; i < 6; i++) {
-              const angle = (Math.PI * 2 * i) / 6;
-              newParticles.push({ id: uuidv4(), x: c.x, y: c.y, vx: Math.cos(angle) * 2, vy: Math.sin(angle) * 2, life: 1, color: '#fde047' });
-            }
-          }
-        }
-
-        // Age particles
-        for (const p of newParticles) { p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life -= 0.04; }
-
-        const newDashCooldown = Math.max(0, current.dashCooldown - dt);
-
         setGameState(prev => ({
           ...prev,
-          playerX: newX,
-          asteroids: newAsteroids.filter(a => a.active),
-          coins: newCoins.filter(c => c.active),
-          stars: newStars,
-          particles: newParticles.filter(p => p.life > 0),
-          status: isGameOver ? 'GAME_OVER' : 'PLAYING',
-          score: Math.floor(prev.gameTime * 10) + (prev.coinsCollected + coinsAdd) * GAME_CONFIG.COIN_SCORE,
-          coinsCollected: prev.coinsCollected + coinsAdd,
-          gameTime: prev.gameTime + dt / 1000,
-          dashCooldown: newDashCooldown
+          status: 'PLAYING',
+          startTime: now,
+          lastSpawnTime: now,
+          lastPowerupTime: now,
+          lastScoreTickTime: now,
+          player: { x: w / 2, y: h / 2 },
         }));
       }
+      if (input.actions['restart-game']) {
+        setGameState(getInitialState());
+      }
+      if (input.actions.pause && s.status === 'PLAYING') {
+        callbacksRef.current.onStatusChange('PAUSED');
+      }
+      if (input.actions.resume) {
+        callbacksRef.current.onStatusChange('PLAYING');
+      }
+
+      // ── Game update ──
+      if (s.status === 'PLAYING' && !paused) {
+        const now = Date.now();
+        const gameTime = (now - s.startTime) / 1000;
+        const diffLevel = Math.floor(gameTime / CFG.DIFFICULTY_INTERVAL);
+        const enemySpeed = (CFG.ENEMY_BASE_SPEED + diffLevel * CFG.ENEMY_SPEED_RAMP) * dt;
+        const spawnInterval = Math.max(
+          CFG.MIN_SPAWN_INTERVAL,
+          CFG.INITIAL_SPAWN_INTERVAL - diffLevel * CFG.SPAWN_INTERVAL_RAMP
+        );
+        const waveSize = Math.min(
+          CFG.MAX_WAVE_SIZE,
+          CFG.INITIAL_WAVE_SIZE + Math.floor(diffLevel * 0.6)
+        );
+        const isFrozen = now < s.frozenUntil;
+
+        // Player movement
+        let px = s.player.x + input.move.x * dt;
+        let py = s.player.y + input.move.y * dt;
+        px = Math.max(CFG.PLAYER_SIZE, Math.min(w - CFG.PLAYER_SIZE, px));
+        py = Math.max(CFG.PLAYER_SIZE, Math.min(h - CFG.PLAYER_SIZE, py));
+
+        // Copy arrays
+        let enemies = [...s.enemies];
+        let powerups = [...s.powerups];
+        let missiles = [...s.missiles];
+        let particles = [...s.particles];
+        let flashes = [...s.flashes];
+        let scoreAdd = 0;
+        let gameOver = false;
+        let frozenUntil = s.frozenUntil;
+        let vortex = s.vortex;
+        let nukeFlash = s.nukeFlash;
+        let lastSpawnTime = s.lastSpawnTime;
+        let lastPowerupTime = s.lastPowerupTime;
+        let lastScoreTickTime = s.lastScoreTickTime;
+
+        // Score per second
+        if (now - lastScoreTickTime >= 1000) {
+          scoreAdd += CFG.SCORE_PER_SECOND;
+          lastScoreTickTime = now;
+        }
+
+        // Spawn enemies
+        if (now - lastSpawnTime >= spawnInterval) {
+          lastSpawnTime = now;
+          for (let i = 0; i < waveSize; i++) {
+            const pos = randomEdgePosition(w, h);
+            const angle = Math.atan2(py - pos.y, px - pos.x);
+            // Add some spread so they don't all converge on exact same point
+            const spread = (Math.random() - 0.5) * 0.6;
+            enemies.push({
+              id: uuidv4(),
+              x: pos.x, y: pos.y,
+              vx: Math.cos(angle + spread),
+              vy: Math.sin(angle + spread),
+              frozen: false,
+              active: true,
+            });
+          }
+        }
+
+        // Spawn powerups
+        const powerupInterval = Math.max(
+          CFG.POWERUP_MIN_INTERVAL,
+          CFG.POWERUP_SPAWN_INTERVAL - diffLevel * 200
+        );
+        if (now - lastPowerupTime >= powerupInterval && powerups.filter(p => p.active).length < 3) {
+          lastPowerupTime = now;
+          const types: PowerupType[] = ['missile', 'nuke', 'freeze', 'vortex'];
+          const type = types[Math.floor(Math.random() * types.length)];
+          const pos = randomArenaPosition(w, h);
+          powerups.push({
+            id: uuidv4(),
+            x: pos.x, y: pos.y,
+            type,
+            active: true,
+            spawnTime: now,
+          });
+        }
+
+        // Remove old powerups (after 10 seconds)
+        powerups = powerups.filter(p => p.active && now - p.spawnTime < 10000);
+
+        // Move enemies
+        for (const e of enemies) {
+          if (!e.active) continue;
+          if (isFrozen || e.frozen) continue;
+
+          // Vortex pull
+          if (vortex && now - vortex.startTime < vortex.duration) {
+            const d = dist(e, vortex);
+            if (d < CFG.VORTEX_RADIUS) {
+              const pull = (1 - d / CFG.VORTEX_RADIUS) * 3 * dt;
+              const angle = Math.atan2(vortex.y - e.y, vortex.x - e.x);
+              e.x += Math.cos(angle) * pull;
+              e.y += Math.sin(angle) * pull;
+              // Destroy if very close to center
+              if (d < 15) {
+                e.active = false;
+                scoreAdd += CFG.SCORE_PER_KILL;
+                particles.push(...spawnParticles(e.x, e.y, '#a855f7', 5));
+              }
+              continue;
+            }
+          }
+
+          // Normal tracking: re-target toward player
+          const angle = Math.atan2(py - e.y, px - e.x);
+          // Blend existing direction with tracking (80% track, 20% keep)
+          e.vx = e.vx * 0.2 + Math.cos(angle) * 0.8;
+          e.vy = e.vy * 0.2 + Math.sin(angle) * 0.8;
+          // Normalize
+          const len = Math.sqrt(e.vx * e.vx + e.vy * e.vy) || 1;
+          e.vx /= len;
+          e.vy /= len;
+          e.x += e.vx * enemySpeed;
+          e.y += e.vy * enemySpeed;
+        }
+
+        // Handle freeze shatter
+        if (s.frozenUntil > 0 && now >= s.frozenUntil && isFrozen === false) {
+          // Freeze just ended — shatter all frozen enemies
+          for (const e of enemies) {
+            if (e.active && e.frozen) {
+              e.active = false;
+              scoreAdd += CFG.SCORE_PER_KILL;
+              particles.push(...spawnParticles(e.x, e.y, '#22c55e', 6));
+            }
+          }
+          if (enemies.some(e => e.frozen)) {
+            sfx.explosion();
+          }
+          frozenUntil = 0;
+        }
+
+        // Apply frozen state
+        if (isFrozen) {
+          for (const e of enemies) {
+            if (e.active) e.frozen = true;
+          }
+        }
+
+        // Handle vortex expiry
+        if (vortex && now - vortex.startTime >= vortex.duration) {
+          // Kill remaining enemies near vortex
+          for (const e of enemies) {
+            if (!e.active) continue;
+            if (dist(e, vortex) < CFG.VORTEX_RADIUS * 0.5) {
+              e.active = false;
+              scoreAdd += CFG.SCORE_PER_KILL;
+              particles.push(...spawnParticles(e.x, e.y, '#a855f7', 5));
+            }
+          }
+          vortex = null;
+        }
+
+        // Move missiles
+        for (const m of missiles) {
+          if (!m.active) continue;
+          m.x += m.vx * dt;
+          m.y += m.vy * dt;
+          // Out of bounds
+          if (m.x < -20 || m.x > w + 20 || m.y < -20 || m.y > h + 20) {
+            m.active = false;
+          }
+        }
+
+        // Missile vs enemy collision
+        for (const m of missiles) {
+          if (!m.active) continue;
+          for (const e of enemies) {
+            if (!e.active) continue;
+            if (dist(m, e) < CFG.MISSILE_SIZE + CFG.ENEMY_HITBOX) {
+              m.active = false;
+              e.active = false;
+              scoreAdd += CFG.SCORE_PER_KILL;
+              sfx.explosion();
+              particles.push(...spawnParticles(e.x, e.y, '#3b82f6', 6));
+            }
+          }
+        }
+
+        // Player vs powerup collision
+        const playerPos: Vec2 = { x: px, y: py };
+        for (const p of powerups) {
+          if (!p.active) continue;
+          if (dist(playerPos, p) < CFG.PLAYER_HITBOX + CFG.POWERUP_HITBOX) {
+            p.active = false;
+            sfx.powerup();
+            flashes.push({ x: p.x, y: p.y, startTime: now, color: POWERUP_COLORS[p.type] });
+
+            switch (p.type) {
+              case 'missile': {
+                // Fire missiles outward from player
+                for (let i = 0; i < CFG.MISSILE_COUNT; i++) {
+                  const angle = (Math.PI * 2 * i) / CFG.MISSILE_COUNT;
+                  missiles.push({
+                    id: uuidv4(),
+                    x: px, y: py,
+                    vx: Math.cos(angle) * CFG.MISSILE_SPEED,
+                    vy: Math.sin(angle) * CFG.MISSILE_SPEED,
+                    active: true,
+                  });
+                }
+                break;
+              }
+              case 'nuke': {
+                sfx.crash();
+                nukeFlash = now;
+                // Destroy ALL enemies
+                for (const e of enemies) {
+                  if (e.active) {
+                    e.active = false;
+                    scoreAdd += CFG.SCORE_PER_KILL;
+                    particles.push(...spawnParticles(e.x, e.y, '#eab308', 4));
+                  }
+                }
+                break;
+              }
+              case 'freeze': {
+                frozenUntil = now + CFG.FREEZE_DURATION;
+                for (const e of enemies) {
+                  if (e.active) e.frozen = true;
+                }
+                break;
+              }
+              case 'vortex': {
+                vortex = { x: px, y: py, startTime: now, duration: CFG.VORTEX_DURATION };
+                break;
+              }
+            }
+          }
+        }
+
+        // Player vs enemy collision
+        for (const e of enemies) {
+          if (!e.active) continue;
+          if (dist(playerPos, e) < CFG.PLAYER_HITBOX + CFG.ENEMY_HITBOX) {
+            gameOver = true;
+            break;
+          }
+        }
+
+        // Update particles
+        for (const p of particles) {
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.vx *= 0.96;
+          p.vy *= 0.96;
+          p.life -= 0.03 * dt;
+        }
+
+        // Remove stale flashes
+        flashes = flashes.filter(f => now - f.startTime < 400);
+
+        // Nuke flash fade
+        if (nukeFlash > 0 && now - nukeFlash > 500) {
+          nukeFlash = 0;
+        }
+
+        setGameState({
+          ...s,
+          status: gameOver ? 'GAME_OVER' : 'PLAYING',
+          player: { x: px, y: py },
+          enemies: enemies.filter(e => e.active),
+          powerups: powerups.filter(p => p.active),
+          missiles: missiles.filter(m => m.active),
+          particles: particles.filter(p => p.life > 0),
+          score: s.score + scoreAdd,
+          difficultyLevel: diffLevel,
+          frozenUntil,
+          vortex,
+          nukeFlash,
+          flashes,
+          lastSpawnTime,
+          lastPowerupTime,
+          lastScoreTickTime,
+        });
+      }
+
       loopId = requestAnimationFrame(loop);
     };
 
-    loop();
+    loopId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(loopId);
-  }, [paused]);
+  }, [paused, inputRef, getInitialState]);
 
-  return { gameState, updateGyro, activateShield, triggerDash, startGame, resetGame };
+  return gameState;
 }
 
+// ==========================================
+// 5. Grid Background Component
+// ==========================================
+function GridBackground({ w, h }: { w: number; h: number }) {
+  const lines: React.ReactNode[] = [];
+  // Vertical lines
+  for (let x = 0; x < w; x += CFG.GRID_SIZE) {
+    lines.push(
+      <div key={`v${x}`} className="absolute top-0 bottom-0"
+        style={{ left: x, width: 1, background: 'rgba(255,255,255,0.04)' }} />
+    );
+  }
+  // Horizontal lines
+  for (let y = 0; y < h; y += CFG.GRID_SIZE) {
+    lines.push(
+      <div key={`h${y}`} className="absolute left-0 right-0"
+        style={{ top: y, height: 1, background: 'rgba(255,255,255,0.04)' }} />
+    );
+  }
+  return <>{lines}</>;
+}
+
+// ==========================================
+// 6. Main Component
+// ==========================================
 interface Props {
-  socket: Socket;
-  roomId: string;
-  onExit?: () => void;
-  paused?: boolean;
-  onPause?: () => void;
-  onResume?: () => void;
-  onScoreChange?: (score: number) => void;
-  onStatusChange?: (status: any) => void;
-  settings?: any;
+  inputRef: MutableRefObject<NormalizedInput>;
+  paused: boolean;
+  callbacks: GameCallbacks;
+  [key: string]: any;
 }
 
-export default function Game5({ socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
-  const { gameState, updateGyro, activateShield, triggerDash, startGame, resetGame } = useGameLogic(paused);
-  const { playerX, asteroids, coins, stars, particles, shield, status, score, coinsCollected, dashCooldown, gameTime } = gameState;
+export default function Game5({ inputRef, paused, callbacks }: Props) {
+  const gameState = useGameLogic(inputRef, paused, callbacks);
+  const {
+    player, enemies, powerups, missiles, particles,
+    status, score, startTime, difficultyLevel,
+    frozenUntil, vortex, nukeFlash, flashes,
+  } = gameState;
 
-  useEffect(() => { if (onScoreChange) onScoreChange(score); }, [score, onScoreChange]);
-  useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
-
+  const [dims, setDims] = useState({ w: 800, h: 600 });
   useEffect(() => {
-    const handleGyro = (data: GyroData) => updateGyro(data);
-    const handleAction = (payload: any) => {
-      const action = typeof payload === 'string' ? payload : payload.action;
-      if (action === 'shield') activateShield();
-      if (action === 'dash-left') triggerDash(-1);
-      if (action === 'dash-right') triggerDash(1);
-      if (action === 'start-game') startGame();
-      if (action === 'restart-game') resetGame();
-      if (action === 'pause') onPause?.();
-      if (action === 'resume') onResume?.();
-    };
-    socket.on('update-game-state', handleGyro);
-    socket.on('controller-action', handleAction);
-    socket.emit('sync-game-status', { roomId, status });
-    return () => {
-      socket.off('update-game-state');
-      socket.off('controller-action');
-    };
-  }, [socket, updateGyro, activateShield, triggerDash, startGame, resetGame, status, onPause, onResume, roomId]);
+    const update = () => setDims({ w: window.innerWidth, h: window.innerHeight });
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
 
-  const difficultyLevel = Math.floor(gameTime / 15);
+  const now = Date.now();
+  const isFrozen = now < frozenUntil;
+  const vortexActive = vortex && now - vortex.startTime < vortex.duration;
+  const nukeFlashActive = nukeFlash > 0 && now - nukeFlash < 500;
+  const nukeFlashOpacity = nukeFlashActive ? Math.max(0, 1 - (now - nukeFlash) / 500) : 0;
+
+  // Player rotation based on movement direction
+  const input = inputRef.current;
+  const moveAngle = Math.atan2(input.move.y, input.move.x) * (180 / Math.PI) + 90;
+  const isMoving = Math.abs(input.move.x) > 0.1 || Math.abs(input.move.y) > 0.1;
 
   return (
-    <div className="relative w-full h-screen overflow-hidden flex items-center justify-center font-mono select-none"
-      style={{ background: '#000814' }}>
+    <div
+      className="relative w-full h-screen overflow-hidden font-mono select-none"
+      style={{ background: 'radial-gradient(ellipse at center, #0a0e1a 0%, #050510 70%, #020208 100%)' }}
+    >
+      {/* Grid */}
+      <GridBackground w={dims.w} h={dims.h} />
 
-      {/* HUD */}
-      {status === 'PLAYING' && (
-        <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-1">
-          <div className="text-yellow-400 text-sm font-bold bg-yellow-900/30 px-3 py-1 rounded-full border border-yellow-500/30">
-            🪙 {coinsCollected}
+      {/* Nuke flash overlay */}
+      {nukeFlashActive && (
+        <div className="absolute inset-0 z-30 pointer-events-none"
+          style={{ background: `rgba(255, 255, 200, ${nukeFlashOpacity * 0.6})` }} />
+      )}
+
+      {/* Freeze overlay */}
+      {isFrozen && (
+        <div className="absolute inset-0 z-10 pointer-events-none"
+          style={{ background: 'rgba(34, 197, 94, 0.05)', border: '2px solid rgba(34, 197, 94, 0.3)' }} />
+      )}
+
+      {/* Vortex effect */}
+      {vortexActive && vortex && (
+        <div className="absolute z-10 pointer-events-none rounded-full"
+          style={{
+            left: vortex.x - CFG.VORTEX_RADIUS,
+            top: vortex.y - CFG.VORTEX_RADIUS,
+            width: CFG.VORTEX_RADIUS * 2,
+            height: CFG.VORTEX_RADIUS * 2,
+            background: 'radial-gradient(circle, rgba(168,85,247,0.3) 0%, rgba(168,85,247,0.1) 40%, transparent 70%)',
+            animation: 'spin 1s linear infinite',
+            border: '1px solid rgba(168,85,247,0.3)',
+          }}
+        />
+      )}
+
+      {/* Powerup collection flashes */}
+      {flashes.map((f, i) => {
+        const age = now - f.startTime;
+        const opacity = Math.max(0, 1 - age / 400);
+        const size = 40 + age * 0.3;
+        return (
+          <div key={i} className="absolute z-20 pointer-events-none rounded-full"
+            style={{
+              left: f.x - size / 2,
+              top: f.y - size / 2,
+              width: size, height: size,
+              background: `radial-gradient(circle, ${f.color}80, transparent)`,
+              opacity,
+            }} />
+        );
+      })}
+
+      {/* Enemies */}
+      {enemies.map(e => (
+        <div key={e.id} className="absolute pointer-events-none"
+          style={{
+            left: e.x - CFG.ENEMY_SIZE / 2,
+            top: e.y - CFG.ENEMY_SIZE / 2,
+            width: CFG.ENEMY_SIZE,
+            height: CFG.ENEMY_SIZE,
+            borderRadius: '50%',
+            background: e.frozen
+              ? 'radial-gradient(circle, #86efac, #22c55e)'
+              : 'radial-gradient(circle, #fca5a5, #ef4444)',
+            boxShadow: e.frozen
+              ? '0 0 10px rgba(34,197,94,0.6)'
+              : '0 0 10px rgba(239,68,68,0.6), 0 0 20px rgba(239,68,68,0.3)',
+            transition: e.frozen ? 'background 0.3s' : 'none',
+          }}
+        />
+      ))}
+
+      {/* Powerups */}
+      {powerups.map(p => {
+        const age = now - p.spawnTime;
+        const pulse = 1 + Math.sin(age * 0.005) * 0.15;
+        const color = POWERUP_COLORS[p.type];
+        return (
+          <div key={p.id} className="absolute pointer-events-none flex items-center justify-center"
+            style={{
+              left: p.x - (CFG.POWERUP_SIZE * pulse) / 2,
+              top: p.y - (CFG.POWERUP_SIZE * pulse) / 2,
+              width: CFG.POWERUP_SIZE * pulse,
+              height: CFG.POWERUP_SIZE * pulse,
+              borderRadius: '50%',
+              background: `radial-gradient(circle, ${color}cc, ${color}66)`,
+              boxShadow: `0 0 14px ${color}88, 0 0 28px ${color}44`,
+              border: `2px solid ${color}aa`,
+            }}
+          >
+            <span className="text-white text-xs font-black" style={{ textShadow: `0 0 6px ${color}` }}>
+              {POWERUP_LABELS[p.type]}
+            </span>
           </div>
-          {difficultyLevel > 0 && (
-            <div className="text-purple-400 text-xs font-bold bg-purple-900/30 px-2 py-1 rounded-full border border-purple-500/30">
-              LVL {difficultyLevel + 1}
+        );
+      })}
+
+      {/* Missiles */}
+      {missiles.map(m => (
+        <div key={m.id} className="absolute pointer-events-none"
+          style={{
+            left: m.x - CFG.MISSILE_SIZE / 2,
+            top: m.y - CFG.MISSILE_SIZE / 2,
+            width: CFG.MISSILE_SIZE,
+            height: CFG.MISSILE_SIZE,
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, #fff, #60a5fa)',
+            boxShadow: '0 0 8px rgba(96,165,250,0.8)',
+          }}
+        />
+      ))}
+
+      {/* Particles */}
+      {particles.map(p => (
+        <div key={p.id} className="absolute pointer-events-none rounded-full"
+          style={{
+            left: p.x - p.size / 2,
+            top: p.y - p.size / 2,
+            width: p.size,
+            height: p.size,
+            background: p.color,
+            opacity: Math.max(0, p.life),
+            boxShadow: `0 0 4px ${p.color}`,
+          }}
+        />
+      ))}
+
+      {/* Player */}
+      {status !== 'READY' && (
+        <div className="absolute z-20 pointer-events-none"
+          style={{
+            left: player.x - CFG.PLAYER_SIZE,
+            top: player.y - CFG.PLAYER_SIZE,
+            width: CFG.PLAYER_SIZE * 2,
+            height: CFG.PLAYER_SIZE * 2,
+          }}
+        >
+          {/* Glow ring */}
+          <div className="absolute inset-0 rounded-full"
+            style={{
+              background: 'radial-gradient(circle, rgba(103,232,249,0.15), transparent 70%)',
+            }}
+          />
+          {/* Arrow SVG */}
+          <svg viewBox="0 0 36 36" className="w-full h-full"
+            style={{
+              transform: `rotate(${isMoving ? moveAngle : 0}deg)`,
+              transition: 'transform 0.1s ease-out',
+              filter: 'drop-shadow(0 0 6px rgba(103,232,249,0.8)) drop-shadow(0 0 12px rgba(103,232,249,0.4))',
+            }}
+          >
+            <polygon
+              points="18,4 28,30 18,24 8,30"
+              fill="#67e8f9"
+              stroke="#a5f3fc"
+              strokeWidth="1"
+            />
+          </svg>
+        </div>
+      )}
+
+      {/* HUD: Score */}
+      {status === 'PLAYING' && (
+        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-30">
+          <div className="text-2xl font-black tracking-[0.3em] text-white/90"
+            style={{ textShadow: '0 0 20px rgba(103,232,249,0.5)' }}>
+            {score.toString().padStart(6, '0')}
+          </div>
+        </div>
+      )}
+
+      {/* HUD: Difficulty */}
+      {status === 'PLAYING' && difficultyLevel > 0 && (
+        <div className="absolute top-5 left-5 z-30 text-xs font-bold text-cyan-400 bg-cyan-900/30 px-3 py-1 rounded-full border border-cyan-500/30">
+          WAVE {difficultyLevel + 1}
+        </div>
+      )}
+
+      {/* HUD: Active effects */}
+      {status === 'PLAYING' && (isFrozen || vortexActive) && (
+        <div className="absolute top-5 right-5 z-30 flex flex-col gap-1">
+          {isFrozen && (
+            <div className="text-xs font-bold text-green-400 bg-green-900/30 px-3 py-1 rounded-full border border-green-500/30">
+              FREEZE {Math.ceil((frozenUntil - now) / 1000)}s
+            </div>
+          )}
+          {vortexActive && vortex && (
+            <div className="text-xs font-bold text-purple-400 bg-purple-900/30 px-3 py-1 rounded-full border border-purple-500/30">
+              VORTEX {Math.ceil((vortex.duration - (now - vortex.startTime)) / 1000)}s
             </div>
           )}
         </div>
       )}
 
-      <div className="relative overflow-hidden"
-        style={{ width: GAME_CONFIG.WIDTH, height: GAME_CONFIG.HEIGHT, background: '#000814' }}>
-
-        {/* Stars */}
-        {stars.map(s => (
-          <div key={s.id} className="absolute rounded-full bg-white"
-            style={{ width: s.size, height: s.size, left: s.x, top: s.y, opacity: 0.6 }} />
-        ))}
-
-        {/* Nebula background glow */}
-        <div className="absolute pointer-events-none"
-          style={{
-            left: playerX - 200, top: GAME_CONFIG.HEIGHT - 300,
-            width: 400, height: 300,
-            background: 'radial-gradient(circle, rgba(99,102,241,0.05), transparent)',
-            transition: 'left 0.1s ease'
-          }} />
-
-        {/* Coins */}
-        {coins.map(c => (
-          <div key={c.id}
-            className="absolute rounded-full flex items-center justify-center font-bold text-xs"
-            style={{
-              left: c.x - c.width / 2, top: c.y,
-              width: c.width, height: c.height,
-              background: 'radial-gradient(circle, #fde047, #f59e0b)',
-              boxShadow: '0 0 12px rgba(245,158,11,0.8)',
-              border: '2px solid rgba(253,224,71,0.8)'
-            }}>
-            $
+      {/* READY screen */}
+      {status === 'READY' && (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-6">
+          <div className="text-5xl font-black text-cyan-400 tracking-wider"
+            style={{ textShadow: '0 0 30px rgba(103,232,249,0.6)' }}>
+            TILT TO LIVE
           </div>
-        ))}
-
-        {/* Asteroids */}
-        {asteroids.map(a => (
-          <div key={a.id}
-            className="absolute rounded-full"
-            style={{
-              left: a.x - a.width / 2, top: a.y - a.height / 2,
-              width: a.width, height: a.height,
-              background: 'radial-gradient(circle at 35% 35%, #78716c, #292524)',
-              boxShadow: '0 0 8px rgba(120,113,108,0.5), inset -4px -4px 8px rgba(0,0,0,0.6)',
-              transform: `rotate(${a.rotation}deg)`
-            }}>
-            <div className="absolute inset-0 rounded-full opacity-20"
-              style={{ background: 'radial-gradient(circle at 70% 70%, rgba(255,255,255,0.3), transparent)' }} />
+          <div className="text-white/40 text-sm tracking-widest animate-pulse">
+            TILT TO MOVE
           </div>
-        ))}
-
-        {/* Particles */}
-        {particles.map(p => (
-          <div key={p.id} className="absolute rounded-full pointer-events-none"
-            style={{
-              width: 5, height: 5,
-              left: p.x - 2.5, top: p.y - 2.5,
-              backgroundColor: p.color,
-              opacity: p.life,
-              boxShadow: `0 0 4px ${p.color}`
-            }} />
-        ))}
-
-        {/* Player Spaceship */}
-        <div className="absolute z-10"
-          style={{
-            left: playerX - GAME_CONFIG.SHIP_W / 2,
-            top: GAME_CONFIG.HEIGHT - 80 - GAME_CONFIG.SHIP_H / 2,
-            width: GAME_CONFIG.SHIP_W,
-            height: GAME_CONFIG.SHIP_H,
-            transition: 'left 0.03s linear'
-          }}>
-          {/* Shield ring */}
-          {shield > 0 && (
-            <div className="absolute rounded-full animate-ping"
-              style={{
-                inset: -14,
-                border: '3px solid rgba(103,232,249,0.7)',
-                boxShadow: '0 0 20px rgba(103,232,249,0.5)'
-              }} />
-          )}
-          {/* Engine glow */}
-          <div className="absolute"
-            style={{
-              bottom: -18, left: '50%', transform: 'translateX(-50%)',
-              width: 16, height: 24,
-              background: 'linear-gradient(180deg, #f97316, transparent)',
-              filter: 'blur(5px)'
-            }} />
-          {/* Ship body */}
-          <div className="w-full h-full"
-            style={{
-              clipPath: 'polygon(50% 0%, 5% 100%, 30% 80%, 50% 90%, 70% 80%, 95% 100%)',
-              background: shield > 0
-                ? 'linear-gradient(180deg, #67e8f9 0%, #0891b2 60%, #164e63 100%)'
-                : 'linear-gradient(180deg, #a5f3fc 0%, #0284c7 60%, #1e3a5f 100%)',
-              filter: `drop-shadow(0 0 ${shield > 0 ? 16 : 8}px rgba(34,211,238,${shield > 0 ? 1 : 0.7}))`
-            }} />
-          {/* Cockpit */}
-          <div className="absolute"
-            style={{
-              top: '15%', left: '30%', width: '40%', height: '25%',
-              background: 'rgba(186,230,253,0.6)',
-              clipPath: 'ellipse(50% 50% at 50% 50%)'
-            }} />
+          <div className="flex gap-4 mt-4">
+            {(['missile', 'nuke', 'freeze', 'vortex'] as PowerupType[]).map(type => (
+              <div key={type} className="flex flex-col items-center gap-1">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold"
+                  style={{
+                    background: POWERUP_COLORS[type],
+                    boxShadow: `0 0 10px ${POWERUP_COLORS[type]}66`,
+                  }}>
+                  {POWERUP_LABELS[type]}
+                </div>
+                <div className="text-white/30 text-[10px] uppercase">{type}</div>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* GAME OVER screen */}
+      {status === 'GAME_OVER' && (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-black/60">
+          <div className="text-4xl font-black text-red-500 tracking-wider"
+            style={{ textShadow: '0 0 30px rgba(239,68,68,0.5)' }}>
+            GAME OVER
+          </div>
+          <div className="text-2xl font-bold text-white/80 tracking-widest">
+            {score.toString().padStart(6, '0')}
+          </div>
+          <div className="text-white/30 text-xs tracking-widest mt-2 animate-pulse">
+            TAP RESTART ON CONTROLLER
+          </div>
+        </div>
+      )}
+
+      {/* Vortex spin animation */}
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 }

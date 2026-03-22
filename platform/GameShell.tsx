@@ -2,7 +2,7 @@
 // 統一管理：輸入正規化、分數/狀態、UI 覆蓋層、設定面板
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { GAME_REGISTRY } from '@/games/registry';
 import { GameSettings } from '@/types/game';
@@ -10,6 +10,7 @@ import { useNormalizedInput } from './useNormalizedInput';
 import type { GameStatus } from './types';
 import GameSettingsPanel from '@/components/GameSettings';
 import GameOverlay from '@/components/GameOverlay';
+import { sfx } from '@/platform/audio';
 
 interface GameShellProps {
   gameId: string;
@@ -23,6 +24,16 @@ export default function GameShell({ gameId, socket, roomId, onExit }: GameShellP
   const [score, setScore] = useState(0);
   const [settings, setSettings] = useState<GameSettings>({ speed: 15, maxAngle: 30 });
   const [restartKey, setRestartKey] = useState(0);
+
+  // 通用音效：開始 / Game Over
+  const prevStatusRef = useRef<GameStatus>('READY');
+  useEffect(() => {
+    if (prevStatusRef.current !== gameStatus) {
+      if (gameStatus === 'PLAYING' && prevStatusRef.current === 'READY') sfx.start();
+      if (gameStatus === 'GAME_OVER') sfx.gameOver();
+      prevStatusRef.current = gameStatus;
+    }
+  }, [gameStatus]);
 
   // 統一輸入（gyro + 按鈕 → NormalizedInput ref）
   const inputRef = useNormalizedInput(socket, settings);
