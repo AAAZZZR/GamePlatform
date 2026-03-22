@@ -53,8 +53,15 @@ export function useP2PConnection(socket: Socket | null, roomId: string) {
         ch.onmessage = (ev) => {
           try {
             const data = JSON.parse(ev.data);
-            // Transparently deliver as if it arrived via socket
-            if (socket) injectSocketEvent(socket, 'update-game-state', data);
+            if (!socket) return;
+            // Route by message type: action / reset-position / gyro (default)
+            if (data._p2p === 'action') {
+              injectSocketEvent(socket, 'controller-action', data.action);
+            } else if (data._p2p === 'reset-position') {
+              injectSocketEvent(socket, 'reset-game-position');
+            } else {
+              injectSocketEvent(socket, 'update-game-state', data);
+            }
           } catch { /* ignore */ }
         };
       };

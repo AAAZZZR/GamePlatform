@@ -4,14 +4,15 @@ import { Socket } from 'socket.io-client';
 interface Props {
     socket: Socket | null;
     roomId: string | null;
+    sendAction?: (action: string) => void;
 }
 
-export default function BrickMobileController({ socket, roomId }: Props) {
+export default function BrickMobileController({ socket, roomId, sendAction }: Props) {
 
     const handleLaunch = (e: any) => {
         e.preventDefault();
-        if (socket && roomId) {
-            socket.emit('controller-action', { action: 'launch', roomId });
+        if (sendAction) {
+            sendAction('launch');
             if (navigator.vibrate) navigator.vibrate(50); // 震動回饋
         }
     };

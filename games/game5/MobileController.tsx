@@ -6,22 +6,17 @@ import { Socket } from 'socket.io-client';
 interface Props {
   socket: Socket | null;
   roomId: string | null;
+  sendAction?: (action: string) => void;
 }
 
-export default function AsteroidMobileController({ socket, roomId }: Props) {
+export default function AsteroidMobileController({ socket, roomId, sendAction }: Props) {
   const [shieldActive, setShieldActive] = useState(false);
   const [dashCooldown, setDashCooldown] = useState(false);
-
-  const sendAction = (action: string) => {
-    if (socket && roomId) {
-      socket.emit('controller-action', { action, roomId });
-    }
-  };
 
   const handleShield = (e: React.TouchEvent | React.MouseEvent) => {
     e.preventDefault();
     if (shieldActive) return;
-    sendAction('shield');
+    sendAction?.('shield');
     setShieldActive(true);
     if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
     setTimeout(() => setShieldActive(false), 4500);
@@ -30,7 +25,7 @@ export default function AsteroidMobileController({ socket, roomId }: Props) {
   const handleDash = (dir: 'left' | 'right') => (e: React.TouchEvent | React.MouseEvent) => {
     e.preventDefault();
     if (dashCooldown) return;
-    sendAction(`dash-${dir}`);
+    sendAction?.(`dash-${dir}`);
     setDashCooldown(true);
     if (navigator.vibrate) navigator.vibrate(30);
     setTimeout(() => setDashCooldown(false), 1600);

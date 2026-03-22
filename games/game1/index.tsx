@@ -1,17 +1,17 @@
-// games/game1/index.tsx — Rocket Shooter (Enhanced)
-import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Socket } from 'socket.io-client';
+// games/game1/index.tsx — Rocket Shooter (R3F)
+'use client';
+
+import React, { useEffect, useState, useRef, useCallback, useMemo, MutableRefObject } from 'react';
+import { Canvas } from '@react-three/fiber';
+import * as THREE from 'three';
 import { v4 as uuidv4 } from 'uuid';
-import { GyroData } from '@/types/game';
+import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
 
 // ==========================================
 // 1. Configuration
 // ==========================================
-const GAME_CONFIG = {
-  WIDTH: 800,
-  HEIGHT: 600,
+const CFG = {
   PLAYER_SIZE: 50,
-  PLAYER_SPEED: 10,
   BULLET_W: 6,
   BULLET_H: 22,
   BULLET_SPEED: 20,
@@ -24,45 +24,16 @@ const GAME_CONFIG = {
   POWERUP_SPEED: 4,
   POWERUP_CHANCE: 0.15,
   SCORE_PER_HIT: 100,
-  // Stars
   STAR_COUNT: 80,
 };
 
 // ==========================================
 // 2. Types
 // ==========================================
-interface Entity {
-  id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  active: boolean;
-  type?: string;
-}
-
-interface Particle {
-  id: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number; // 0..1
-  color: string;
-}
-
-interface Star {
-  id: string;
-  x: number;
-  y: number;
-  size: number;
-  speed: number;
-  opacity: number;
-}
-
-interface Player extends Entity {
-  score: number;
-}
+interface Entity { id: string; x: number; y: number; width: number; height: number; active: boolean; type?: string; }
+interface Particle { id: string; x: number; y: number; vx: number; vy: number; life: number; color: string; }
+interface Star { id: string; x: number; y: number; size: number; speed: number; opacity: number; }
+interface Player extends Entity { score: number; }
 
 interface GameState {
   player: Player;
@@ -71,390 +42,362 @@ interface GameState {
   powerUps: Entity[];
   particles: Particle[];
   stars: Star[];
-  status: 'READY' | 'PLAYING' | 'GAME_OVER';
+  status: GameStatus;
   fireRate: number;
   startTime: number;
 }
 
 // ==========================================
-// 3. Logic Hook
+// 3. Game Logic Hook (platform inputRef)
 // ==========================================
-function useGameLogic(paused: boolean = false) {
-  const createStars = (): Star[] =>
-    Array.from({ length: GAME_CONFIG.STAR_COUNT }, () => ({
+function useGameLogic(
+  inputRef: MutableRefObject<NormalizedInput>,
+  paused: boolean,
+  callbacks: GameCallbacks
+) {
+  const boundsRef = useRef({ halfW: 400, halfH: 300 });
+
+  useEffect(() => {
+    const update = () => {
+      boundsRef.current = { halfW: window.innerWidth / 2, halfH: window.innerHeight / 2 };
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  const createStars = useCallback((): Star[] => {
+    const { halfW, halfH } = boundsRef.current;
+    return Array.from({ length: CFG.STAR_COUNT }, () => ({
       id: uuidv4(),
-      x: Math.random() * GAME_CONFIG.WIDTH - GAME_CONFIG.WIDTH / 2,
-      y: Math.random() * GAME_CONFIG.HEIGHT - GAME_CONFIG.HEIGHT / 2,
+      x: Math.random() * halfW * 2 - halfW,
+      y: Math.random() * halfH * 2 - halfH,
       size: Math.random() * 2.5 + 0.5,
       speed: Math.random() * 1.5 + 0.5,
       opacity: Math.random() * 0.7 + 0.3,
     }));
+  }, []);
 
-  const getInitialState = (): GameState => ({
-    player: {
-      id: 'p1', x: 0, y: 0,
-      width: GAME_CONFIG.PLAYER_SIZE,
-      height: GAME_CONFIG.PLAYER_SIZE,
-      active: true, score: 0
-    },
+  const getInitialState = useCallback((): GameState => ({
+    player: { id: 'p1', x: 0, y: 0, width: CFG.PLAYER_SIZE, height: CFG.PLAYER_SIZE, active: true, score: 0 },
     bullets: [],
     obstacles: [],
     powerUps: [],
     particles: [],
     stars: createStars(),
     status: 'READY',
-    fireRate: GAME_CONFIG.INITIAL_FIRE_RATE,
-    startTime: 0
-  });
+    fireRate: CFG.INITIAL_FIRE_RATE,
+    startTime: 0,
+  }), [createStars]);
 
-  const [gameState, setGameState] = useState<GameState>(getInitialState());
+  const [gameState, setGameState] = useState<GameState>(getInitialState);
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
 
-  const inputRef = useRef({ moveX: 0, moveY: 0, isFiring: false });
   const lastFireTimeRef = useRef(0);
+  const callbacksRef = useRef(callbacks);
+  callbacksRef.current = callbacks;
 
-  const updateGyro = useCallback((data: GyroData) => {
-    if (data.beta !== null && data.gamma !== null) {
-      inputRef.current.moveX = (data.gamma / 30) * GAME_CONFIG.PLAYER_SPEED;
-      inputRef.current.moveY = (data.beta / 30) * GAME_CONFIG.PLAYER_SPEED;
-    }
-  }, []);
+  // 回報分數 / 狀態
+  useEffect(() => { callbacksRef.current.onScoreChange(gameState.player.score); }, [gameState.player.score]);
+  useEffect(() => { callbacksRef.current.onStatusChange(gameState.status); }, [gameState.status]);
 
-  const setFiring = useCallback((firing: boolean) => {
-    inputRef.current.isFiring = firing;
-  }, []);
-
-  const startGame = useCallback(() => {
-    setGameState(prev => ({
-      ...prev,
-      status: 'PLAYING',
-      startTime: Date.now(),
-      fireRate: GAME_CONFIG.INITIAL_FIRE_RATE
-    }));
-    lastFireTimeRef.current = 0;
-  }, []);
-
-  const resetGame = useCallback(() => {
-    setGameState(getInitialState());
-  }, []);
-
+  // ── Game Loop ──
   useEffect(() => {
     let loopId: number;
     let spawnTimer = 0;
 
     const loop = () => {
-      if (stateRef.current.status === 'PLAYING' && !paused) {
-        const current = stateRef.current;
-        const input = inputRef.current;
-        const now = Date.now();
+      const input = inputRef.current;
+      const s = stateRef.current;
+      const { halfW, halfH } = boundsRef.current;
 
-        const gameTime = (now - current.startTime) / 1000;
-        const difficultyLevel = Math.floor(gameTime / 10);
-        const currentObstacleSpeed = GAME_CONFIG.INITIAL_OBSTACLE_SPEED + difficultyLevel * 0.6;
-        const currentSpawnRate = Math.max(150, GAME_CONFIG.SPAWN_RATE - difficultyLevel * 25);
+      // ── Lifecycle actions (always check, even when paused) ──
+      if (s.status === 'READY' && input.actions['start-game']) {
+        setGameState(prev => ({ ...prev, status: 'PLAYING', startTime: Date.now(), fireRate: CFG.INITIAL_FIRE_RATE }));
+        lastFireTimeRef.current = 0;
+      }
+      if (input.actions['restart-game']) {
+        setGameState(getInitialState());
+        spawnTimer = 0;
+      }
+      if (input.actions.pause && s.status === 'PLAYING') {
+        callbacksRef.current.onStatusChange('PAUSED');
+      }
+      if (input.actions.resume) {
+        callbacksRef.current.onStatusChange('PLAYING');
+      }
+
+      // ── Game update (only when playing & not externally paused) ──
+      if (s.status === 'PLAYING' && !paused) {
+        const now = Date.now();
+        const gameTime = (now - s.startTime) / 1000;
+        const diffLvl = Math.floor(gameTime / 10);
+        const obstSpeed = CFG.INITIAL_OBSTACLE_SPEED + diffLvl * 0.6;
+        const spawnRate = Math.max(150, CFG.SPAWN_RATE - diffLvl * 25);
 
         // Player movement
-        let newPx = current.player.x + input.moveX;
-        let newPy = current.player.y + input.moveY;
-        const limitX = GAME_CONFIG.WIDTH / 2 - GAME_CONFIG.PLAYER_SIZE / 2;
-        const limitY = GAME_CONFIG.HEIGHT / 2 - GAME_CONFIG.PLAYER_SIZE / 2;
-        newPx = Math.max(-limitX, Math.min(limitX, newPx));
-        newPy = Math.max(-limitY, Math.min(limitY, newPy));
+        let px = s.player.x + input.move.x;
+        let py = s.player.y + input.move.y;
+        const limX = halfW - CFG.PLAYER_SIZE / 2;
+        const limY = halfH - CFG.PLAYER_SIZE / 2;
+        px = Math.max(-limX, Math.min(limX, px));
+        py = Math.max(-limY, Math.min(limY, py));
 
         // Bullets
-        const newBullets = [...current.bullets];
-        if (input.isFiring && now - lastFireTimeRef.current >= current.fireRate) {
-          newBullets.push({
-            id: uuidv4(),
-            x: newPx,
-            y: newPy - 30,
-            width: GAME_CONFIG.BULLET_W,
-            height: GAME_CONFIG.BULLET_H,
-            active: true
-          });
+        const bullets = [...s.bullets];
+        if (input.actions.fire && now - lastFireTimeRef.current >= s.fireRate) {
+          bullets.push({ id: uuidv4(), x: px, y: py - 30, width: CFG.BULLET_W, height: CFG.BULLET_H, active: true });
           lastFireTimeRef.current = now;
         }
-        for (let b of newBullets) {
-          b.y -= GAME_CONFIG.BULLET_SPEED;
-          if (b.y < -GAME_CONFIG.HEIGHT / 2) b.active = false;
-        }
+        for (const b of bullets) { b.y -= CFG.BULLET_SPEED; if (b.y < -halfH - 30) b.active = false; }
 
         // Spawn
         spawnTimer += 16;
-        const newObstacles = [...current.obstacles];
-        const newPowerUps = [...current.powerUps];
-        if (spawnTimer > currentSpawnRate) {
+        const obstacles = [...s.obstacles];
+        const powerUps = [...s.powerUps];
+        if (spawnTimer > spawnRate) {
           spawnTimer = 0;
-          const randomX = Math.random() * GAME_CONFIG.WIDTH - GAME_CONFIG.WIDTH / 2;
-          if (Math.random() < GAME_CONFIG.POWERUP_CHANCE) {
-            newPowerUps.push({
-              id: uuidv4(), x: randomX,
-              y: -GAME_CONFIG.HEIGHT / 2 - 50,
-              width: GAME_CONFIG.POWERUP_SIZE,
-              height: GAME_CONFIG.POWERUP_SIZE,
-              active: true, type: 'POWERUP_RATE'
-            });
+          const rx = Math.random() * halfW * 2 - halfW;
+          if (Math.random() < CFG.POWERUP_CHANCE) {
+            powerUps.push({ id: uuidv4(), x: rx, y: -halfH - 50, width: CFG.POWERUP_SIZE, height: CFG.POWERUP_SIZE, active: true, type: 'POWERUP_RATE' });
           } else {
-            newObstacles.push({
-              id: uuidv4(), x: randomX,
-              y: -GAME_CONFIG.HEIGHT / 2 - 50,
-              width: GAME_CONFIG.OBSTACLE_SIZE + (Math.random() * 20 - 10),
-              height: GAME_CONFIG.OBSTACLE_SIZE + (Math.random() * 20 - 10),
-              active: true, type: 'METEOR'
-            });
+            const sz = CFG.OBSTACLE_SIZE + (Math.random() * 20 - 10);
+            obstacles.push({ id: uuidv4(), x: rx, y: -halfH - 50, width: sz, height: sz, active: true, type: 'METEOR' });
           }
         }
+        for (const o of obstacles) { o.y += obstSpeed; if (o.y > halfH + 50) o.active = false; }
+        for (const p of powerUps) { p.y += CFG.POWERUP_SPEED; if (p.y > halfH + 50) p.active = false; }
 
-        for (let o of newObstacles) {
-          o.y += currentObstacleSpeed;
-          if (o.y > GAME_CONFIG.HEIGHT / 2) o.active = false;
-        }
-        for (let p of newPowerUps) {
-          p.y += GAME_CONFIG.POWERUP_SPEED;
-          if (p.y > GAME_CONFIG.HEIGHT / 2) p.active = false;
-        }
-
-        // Stars scrolling
-        const newStars = current.stars.map(s => {
-          let ny = s.y + s.speed * (1 + currentObstacleSpeed * 0.3);
-          if (ny > GAME_CONFIG.HEIGHT / 2) ny = -GAME_CONFIG.HEIGHT / 2;
-          return { ...s, y: ny };
+        // Stars
+        const stars = s.stars.map(st => {
+          let ny = st.y + st.speed * (1 + obstSpeed * 0.3);
+          if (ny > halfH) ny = -halfH;
+          return { ...st, y: ny };
         });
 
         // Collisions
-        let scoreToAdd = 0;
-        let isGameOver = false;
-        let newFireRate = current.fireRate;
-        const newParticles = [...current.particles];
+        let scoreAdd = 0;
+        let gameOver = false;
+        let fireRate = s.fireRate;
+        const particles = [...s.particles];
+        const colors = ['#f97316', '#ef4444', '#fbbf24', '#fb923c', '#fff'];
 
-        // Bullet vs meteor
-        for (let b of newBullets) {
+        for (const b of bullets) {
           if (!b.active) continue;
-          for (let o of newObstacles) {
+          for (const o of obstacles) {
             if (!o.active) continue;
-            if (b.x < o.x + o.width && b.x + b.width > o.x &&
-              b.y < o.y + o.height && b.height + b.y > o.y) {
+            if (b.x - b.width / 2 < o.x + o.width / 2 && b.x + b.width / 2 > o.x - o.width / 2 &&
+                b.y - b.height / 2 < o.y + o.height / 2 && b.y + b.height / 2 > o.y - o.height / 2) {
               b.active = false;
               o.active = false;
-              scoreToAdd += GAME_CONFIG.SCORE_PER_HIT;
-              // Spawn explosion particles
-              const colors = ['#f97316', '#ef4444', '#fbbf24', '#fb923c', '#fff'];
+              scoreAdd += CFG.SCORE_PER_HIT;
               for (let i = 0; i < 12; i++) {
                 const angle = (Math.PI * 2 * i) / 12 + Math.random() * 0.5;
-                const speed = Math.random() * 4 + 2;
-                newParticles.push({
-                  id: uuidv4(),
-                  x: o.x, y: o.y,
-                  vx: Math.cos(angle) * speed,
-                  vy: Math.sin(angle) * speed,
-                  life: 1,
-                  color: colors[Math.floor(Math.random() * colors.length)]
-                });
+                const spd = Math.random() * 4 + 2;
+                particles.push({ id: uuidv4(), x: o.x, y: o.y, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd, life: 1, color: colors[Math.floor(Math.random() * colors.length)] });
               }
             }
           }
         }
 
         // Player vs meteor
-        const playerRect = { ...current.player, x: newPx, y: newPy };
-        for (let o of newObstacles) {
-          if (o.active &&
-            playerRect.x < o.x + o.width && playerRect.x + playerRect.width > o.x &&
-            playerRect.y < o.y + o.height && playerRect.height + playerRect.y > o.y) {
-            isGameOver = true;
+        for (const o of obstacles) {
+          if (!o.active) continue;
+          const dx = Math.abs(px - o.x);
+          const dy = Math.abs(py - o.y);
+          if (dx < (CFG.PLAYER_SIZE + o.width) / 2 * 0.7 && dy < (CFG.PLAYER_SIZE + o.height) / 2 * 0.7) {
+            gameOver = true;
           }
         }
 
         // Player vs powerup
-        for (let p of newPowerUps) {
-          if (p.active &&
-            playerRect.x < p.x + p.width && playerRect.x + playerRect.width > p.x &&
-            playerRect.y < p.y + p.height && playerRect.height + playerRect.y > p.y) {
+        for (const p of powerUps) {
+          if (!p.active) continue;
+          const dx = Math.abs(px - p.x);
+          const dy = Math.abs(py - p.y);
+          if (dx < (CFG.PLAYER_SIZE + p.width) / 2 && dy < (CFG.PLAYER_SIZE + p.height) / 2) {
             p.active = false;
-            scoreToAdd += 500;
-            newFireRate = Math.max(GAME_CONFIG.MIN_FIRE_RATE, newFireRate * 0.9);
+            scoreAdd += 500;
+            fireRate = Math.max(CFG.MIN_FIRE_RATE, fireRate * 0.9);
           }
         }
 
-        // Age particles
-        for (let p of newParticles) {
-          p.x += p.vx;
-          p.y += p.vy;
-          p.vy += 0.1; // gravity
-          p.life -= 0.04;
-        }
+        // Particles
+        for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life -= 0.04; }
 
-        setGameState(prev => ({
-          ...prev,
-          status: isGameOver ? 'GAME_OVER' : 'PLAYING',
-          player: { ...prev.player, x: newPx, y: newPy, score: prev.player.score + scoreToAdd },
-          bullets: newBullets.filter(b => b.active),
-          obstacles: newObstacles.filter(o => o.active),
-          powerUps: newPowerUps.filter(p => p.active),
-          particles: newParticles.filter(p => p.life > 0),
-          stars: newStars,
-          fireRate: newFireRate
-        }));
+        setGameState({
+          ...s,
+          status: gameOver ? 'GAME_OVER' : 'PLAYING',
+          player: { ...s.player, x: px, y: py, score: s.player.score + scoreAdd },
+          bullets: bullets.filter(b => b.active),
+          obstacles: obstacles.filter(o => o.active),
+          powerUps: powerUps.filter(p => p.active),
+          particles: particles.filter(p => p.life > 0),
+          stars,
+          fireRate,
+        });
       }
+
       loopId = requestAnimationFrame(loop);
     };
 
-    loop();
+    loopId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(loopId);
-  }, [paused]);
+  }, [paused, inputRef, getInitialState]);
 
-  return { gameState, updateGyro, setFiring, startGame, resetGame };
+  return gameState;
 }
 
 // ==========================================
-// 4. View
+// 4. R3F Rendering Components
+// ==========================================
+
+// ── Ship shape (三角形飛船) ──
+const shipShape = (() => {
+  const s = new THREE.Shape();
+  const sz = CFG.PLAYER_SIZE;
+  s.moveTo(0, sz * 0.5);
+  s.lineTo(-sz * 0.35, -sz * 0.5);
+  s.lineTo(0, -sz * 0.2);
+  s.lineTo(sz * 0.35, -sz * 0.5);
+  s.closePath();
+  return s;
+})();
+
+function PlayerShip({ player }: { player: Player }) {
+  return (
+    <group position={[player.x, -player.y, 2]}>
+      {/* Engine glow */}
+      <mesh position={[0, -CFG.PLAYER_SIZE * 0.45, -0.1]}>
+        <circleGeometry args={[8, 8]} />
+        <meshBasicMaterial color="#f97316" transparent opacity={0.6} />
+      </mesh>
+      {/* Ship body */}
+      <mesh>
+        <shapeGeometry args={[shipShape]} />
+        <meshBasicMaterial color="#67e8f9" />
+      </mesh>
+    </group>
+  );
+}
+
+function StarField({ data }: { data: Star[] }) {
+  return (
+    <group>
+      {data.map(s => (
+        <mesh key={s.id} position={[s.x, -s.y, -1]}>
+          <circleGeometry args={[s.size, 6]} />
+          <meshBasicMaterial color="#ffffff" transparent opacity={s.opacity} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function Bullets({ data }: { data: Entity[] }) {
+  return (
+    <group>
+      {data.map(b => (
+        <mesh key={b.id} position={[b.x, -b.y, 1]}>
+          <planeGeometry args={[b.width, b.height]} />
+          <meshBasicMaterial color="#fde047" />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function Meteors({ data }: { data: Entity[] }) {
+  return (
+    <group>
+      {data.map(o => (
+        <mesh key={o.id} position={[o.x, -o.y, 1]} rotation={[0, 0, o.y * 0.035]}>
+          <circleGeometry args={[o.width / 2, 12]} />
+          <meshBasicMaterial color="#f97316" />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function PowerUps({ data }: { data: Entity[] }) {
+  return (
+    <group>
+      {data.map(p => (
+        <mesh key={p.id} position={[p.x, -p.y, 1]}>
+          <circleGeometry args={[p.width / 2, 12]} />
+          <meshBasicMaterial color="#4ade80" />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function ExplosionParticles({ data }: { data: Particle[] }) {
+  return (
+    <group>
+      {data.map(p => (
+        <mesh key={p.id} position={[p.x, -p.y, 1.5]}>
+          <circleGeometry args={[3, 6]} />
+          <meshBasicMaterial color={p.color} transparent opacity={Math.max(0, p.life)} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ==========================================
+// 5. Main Component
 // ==========================================
 interface Props {
-  socket: Socket;
-  roomId: string;
-  onExit: () => void;
-  paused?: boolean;
-  onPause?: () => void;
-  onResume?: () => void;
-  onScoreChange?: (score: number) => void;
-  onStatusChange?: (status: any) => void;
-  settings?: any;
+  inputRef: MutableRefObject<NormalizedInput>;
+  paused: boolean;
+  callbacks: GameCallbacks;
+  // legacy props (ignored)
+  [key: string]: any;
 }
 
-export default function Game1({ socket, roomId, onExit, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
-  const { gameState, updateGyro, setFiring, startGame, resetGame } = useGameLogic(paused);
-  const { player, bullets, obstacles, powerUps, particles, stars, status } = gameState;
+export default function Game1({ inputRef, paused, callbacks }: Props) {
+  const gameState = useGameLogic(inputRef, paused, callbacks);
+  const { player, bullets, obstacles, powerUps, particles, stars, status, startTime } = gameState;
 
-  useEffect(() => { if (onScoreChange) onScoreChange(player.score); }, [player.score, onScoreChange]);
-  useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
-
-  useEffect(() => {
-    const handleGyro = (data: GyroData) => updateGyro(data);
-    const handleAction = (payload: any) => {
-      const action = typeof payload === 'string' ? payload : payload.action;
-      if (action === 'fire-start') setFiring(true);
-      if (action === 'fire-end') setFiring(false);
-      if (action === 'shoot') setFiring(true);
-      if (action === 'start-game') startGame();
-      if (action === 'pause') onPause?.();
-      if (action === 'resume') onResume?.();
-      if (action === 'restart-game') resetGame();
-    };
-    socket.on('update-game-state', handleGyro);
-    socket.on('controller-action', handleAction);
-    socket.emit('sync-game-status', { roomId, status });
-    return () => {
-      socket.off('update-game-state');
-      socket.off('controller-action');
-    };
-  }, [socket, updateGyro, setFiring, startGame, resetGame, status, onPause, onResume, roomId]);
-
-  const gameTime = status === 'PLAYING' ? (Date.now() - gameState.startTime) / 1000 : 0;
+  const gameTime = status === 'PLAYING' ? (Date.now() - startTime) / 1000 : 0;
   const difficultyLevel = Math.floor(gameTime / 10);
 
   return (
-    <div className="relative w-full h-screen overflow-hidden flex items-center justify-center font-mono select-none"
-      style={{ background: 'linear-gradient(180deg, #050815 0%, #0f0f2e 50%, #1a0a2e 100%)' }}>
-
+    <div
+      className="relative w-full h-screen overflow-hidden font-mono select-none"
+      style={{ background: 'linear-gradient(180deg, #050815 0%, #0f0f2e 50%, #1a0a2e 100%)' }}
+    >
       {/* Difficulty indicator */}
       {status === 'PLAYING' && difficultyLevel > 0 && (
-        <div className="absolute top-4 right-4 z-20 text-xs font-bold text-purple-400 bg-purple-900/40 px-3 py-1 rounded-full border border-purple-500/30">
+        <div className="absolute top-4 left-4 z-20 text-xs font-bold text-purple-400 bg-purple-900/40 px-3 py-1 rounded-full border border-purple-500/30">
           LVL {difficultyLevel + 1}
         </div>
       )}
 
-      <div className="relative w-full h-full">
-        {/* Stars */}
-        {stars.map(s => (
-          <div key={s.id} className="absolute rounded-full bg-white"
-            style={{
-              width: s.size, height: s.size,
-              left: '50%', top: '50%',
-              transform: `translate(${s.x}px, ${s.y}px)`,
-              opacity: s.opacity
-            }} />
-        ))}
-
-        {/* Bullets */}
-        {bullets.map(b => (
-          <div key={b.id}
-            className="absolute rounded-full"
-            style={{
-              width: b.width, height: b.height,
-              left: '50%', top: '50%',
-              transform: `translate(${b.x - b.width / 2}px, ${b.y - b.height / 2}px)`,
-              background: 'linear-gradient(180deg, #fff 0%, #fde047 50%, #f97316 100%)',
-              boxShadow: '0 0 12px rgba(253,224,71,0.9)'
-            }} />
-        ))}
-
-        {/* Meteors */}
-        {obstacles.map(o => (
-          <div key={o.id}
-            className="absolute rounded-full"
-            style={{
-              width: o.width, height: o.height,
-              left: '50%', top: '50%',
-              transform: `translate(${o.x - o.width / 2}px, ${o.y - o.height / 2}px) rotate(${o.y * 2}deg)`,
-              background: 'radial-gradient(circle at 35% 35%, #f97316, #7c2d12)',
-              boxShadow: '0 0 8px rgba(249,115,22,0.6), inset -4px -4px 8px rgba(0,0,0,0.5)'
-            }}>
-            <div className="absolute inset-0 rounded-full opacity-30"
-              style={{ background: 'radial-gradient(circle at 70% 70%, rgba(255,255,255,0.3), transparent)' }} />
-          </div>
-        ))}
-
-        {/* PowerUps */}
-        {powerUps.map(p => (
-          <div key={p.id}
-            className="absolute rounded-full animate-pulse"
-            style={{
-              width: p.width, height: p.height,
-              left: '50%', top: '50%',
-              transform: `translate(${p.x - p.width / 2}px, ${p.y - p.height / 2}px)`,
-              background: 'radial-gradient(circle, #4ade80, #16a34a)',
-              boxShadow: '0 0 20px rgba(74,222,128,0.9)',
-              border: '2px solid rgba(187,247,208,0.8)'
-            }}>
-            <div className="flex items-center justify-center w-full h-full text-white font-bold text-xs">⚡</div>
-          </div>
-        ))}
-
-        {/* Explosion Particles */}
-        {particles.map(p => (
-          <div key={p.id}
-            className="absolute rounded-full pointer-events-none"
-            style={{
-              width: 6, height: 6,
-              left: '50%', top: '50%',
-              transform: `translate(${p.x - 3}px, ${p.y - 3}px)`,
-              backgroundColor: p.color,
-              opacity: p.life,
-              boxShadow: `0 0 4px ${p.color}`
-            }} />
-        ))}
-
-        {/* Player Ship */}
-        <div
-          className="absolute z-10"
-          style={{
-            width: player.width, height: player.height,
-            left: '50%', top: '50%',
-            transform: `translate(${player.x - player.width / 2}px, ${player.y - player.height / 2}px)`,
-          }}>
-          {/* Engine glow */}
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3"
-            style={{ height: 20, background: 'linear-gradient(180deg, #f97316, transparent)', filter: 'blur(4px)', bottom: -16 }} />
-          {/* Ship body */}
-          <div className="w-full h-full"
-            style={{
-              clipPath: 'polygon(50% 0%, 15% 100%, 50% 80%, 85% 100%)',
-              background: 'linear-gradient(180deg, #67e8f9 0%, #0891b2 50%, #164e63 100%)',
-              filter: 'drop-shadow(0 0 12px rgba(34,211,238,0.8))'
-            }} />
+      {/* Score */}
+      {status === 'PLAYING' && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 text-lg font-black text-white/80 tracking-widest">
+          {player.score.toString().padStart(6, '0')}
         </div>
-      </div>
+      )}
+
+      {/* R3F Canvas */}
+      <Canvas
+        orthographic
+        camera={{ position: [0, 0, 100], near: 0.1, far: 1000, zoom: 1 }}
+        style={{ position: 'absolute', inset: 0 }}
+        gl={{ antialias: false, alpha: true }}
+      >
+        <StarField data={stars} />
+        <Bullets data={bullets} />
+        <Meteors data={obstacles} />
+        <PowerUps data={powerUps} />
+        <ExplosionParticles data={particles} />
+        <PlayerShip player={player} />
+      </Canvas>
     </div>
   );
 }

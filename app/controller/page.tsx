@@ -16,7 +16,7 @@ function ControllerContent() {
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
   const [gameStatus, setGameStatus] = useState<string>('READY'); // [NEW] Track Global Status
 
-  const { socket, isConnected, sendGyro } = useMobileSocket(room);
+  const { socket, isConnected, sendGyro, sendAction } = useMobileSocket(room);
 
   const {
     permissionGranted,
@@ -145,10 +145,11 @@ function ControllerContent() {
                     socket={socket}
                     roomId={room}
                     status={gameStatus}
+                    sendAction={sendAction}
                   />
 
                   {/* Specific Game Controller (Fire buttons etc) */}
-                  <CurrentMobileController socket={socket} roomId={room} />
+                  <CurrentMobileController socket={socket} roomId={room} sendAction={sendAction} />
                 </>
               )}
 

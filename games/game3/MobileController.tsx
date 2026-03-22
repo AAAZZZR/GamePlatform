@@ -4,16 +4,10 @@ import { Socket } from 'socket.io-client';
 interface Props {
     socket: Socket | null;
     roomId: string | null;
+    sendAction?: (action: string) => void;
 }
 
-export default function RacingMobileController({ socket, roomId }: Props) {
-
-    // Helper to emit actions
-    const sendAction = (action: string) => {
-        if (socket && roomId) {
-            socket.emit('controller-action', { action, roomId });
-        }
-    };
+export default function RacingMobileController({ socket, roomId, sendAction }: Props) {
 
     return (
         <div className="w-full h-full relative overflow-hidden bg-zinc-900 select-none touch-none flex flex-col">
@@ -27,8 +21,8 @@ export default function RacingMobileController({ socket, roomId }: Props) {
                  */}
                 <button
                     className="absolute z-10 top-4 right-4 bg-green-600 px-4 py-2 rounded-lg font-bold text-white shadow-lg active:scale-95"
-                    onClick={() => sendAction('start-game')}
-                    onTouchStart={(e) => { e.stopPropagation(); sendAction('start-game'); }}
+                    onClick={() => sendAction?.('start-game')}
+                    onTouchStart={(e) => { e.stopPropagation(); sendAction?.('start-game'); }}
                 >
                     START ENGINE
                 </button>
@@ -52,11 +46,11 @@ export default function RacingMobileController({ socket, roomId }: Props) {
             transition-all
             flex items-center justify-center gap-2
           "
-                    onTouchStart={(e) => { e.preventDefault(); sendAction('nitro-start'); if (navigator.vibrate) navigator.vibrate(50); }}
-                    onTouchEnd={(e) => { e.preventDefault(); sendAction('nitro-end'); }}
-                    onMouseDown={() => sendAction('nitro-start')}
-                    onMouseUp={() => sendAction('nitro-end')}
-                    onMouseLeave={() => sendAction('nitro-end')}
+                    onTouchStart={(e) => { e.preventDefault(); sendAction?.('nitro-start'); if (navigator.vibrate) navigator.vibrate(50); }}
+                    onTouchEnd={(e) => { e.preventDefault(); sendAction?.('nitro-end'); }}
+                    onMouseDown={() => sendAction?.('nitro-start')}
+                    onMouseUp={() => sendAction?.('nitro-end')}
+                    onMouseLeave={() => sendAction?.('nitro-end')}
                 >
                     <span className="text-4xl font-black text-white italic drop-shadow-md">NITRO 💨</span>
                 </button>

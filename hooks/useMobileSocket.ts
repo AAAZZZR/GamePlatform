@@ -100,5 +100,19 @@ export function useMobileSocket(roomId: string | null) {
     }
   };
 
-  return { socket, isConnected, p2pChannel, sendGyro };
+  /** Send controller action preferring P2P DataChannel; fall back to Socket.IO */
+  const sendAction = (action: string) => {
+    const ch = p2pChannel;
+    if (ch && ch.readyState === 'open') {
+      try {
+        ch.send(JSON.stringify({ _p2p: 'action', action }));
+        return;
+      } catch { /* fall through */ }
+    }
+    if (socket && roomId) {
+      socket.emit('controller-action', { action, roomId });
+    }
+  };
+
+  return { socket, isConnected, p2pChannel, sendGyro, sendAction };
 }

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:react.pixijs.io)",
+      "WebFetch(domain:r3f.docs.pmnd.rs)",
+      "WebFetch(domain:phaser.io)",
+      "WebFetch(domain:pixijs.com)",
+      "WebFetch(domain:docs.pmnd.rs)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:pmndrs.github.io)",
+      "WebFetch(domain:playcanvas.com)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(npx next:*)",
+      "Bash(python test_lobby.py)",
+      "Bash(pip install:*)",
+      "Bash(python -m playwright install chromium)",
+      "Bash(python test_game1.py)",
+      "Bash(powershell -Command \"\\(Get-ChildItem -Path 'C:\\\\Users\\\\Owner\\\\Desktop\\\\gyrogame\\\\node_modules' -Recurse -File | Measure-Object -Property Length -Sum\\).Sum / 1MB\")",
+      "Bash(powershell -Command \"\\(Get-ChildItem -Path 'C:\\\\Users\\\\Owner\\\\Desktop\\\\gyrogame' -Recurse -File -Exclude '.git' | Where-Object { \\\\$_.FullName -notmatch 'node_modules|\\\\.next|\\\\.git' } | Measure-Object -Property Length -Sum\\).Sum / 1MB\")"
+    ]
+  }
+}

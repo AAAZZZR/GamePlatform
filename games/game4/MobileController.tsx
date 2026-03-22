@@ -6,31 +6,26 @@ import { Socket } from 'socket.io-client';
 interface Props {
   socket: Socket | null;
   roomId: string | null;
+  sendAction?: (action: string) => void;
 }
 
-export default function SnakeMobileController({ socket, roomId }: Props) {
+export default function SnakeMobileController({ socket, roomId, sendAction }: Props) {
   const [currentDir, setCurrentDir] = useState('→');
   const [isBoosting, setIsBoosting] = useState(false);
-
-  const sendAction = (action: string) => {
-    if (socket && roomId) {
-      socket.emit('controller-action', { action, roomId });
-    }
-  };
 
   // Listen for direction changes from gyro (reflected back from game logic via sync)
   // We just show the visual cue based on tilt; actual direction is set by gyro
 
   const handleBoostStart = (e: React.TouchEvent | React.MouseEvent) => {
     e.preventDefault();
-    sendAction('boost-start');
+    sendAction?.('boost-start');
     setIsBoosting(true);
     if (navigator.vibrate) navigator.vibrate([30, 20, 30]);
   };
 
   const handleBoostEnd = (e: React.TouchEvent | React.MouseEvent) => {
     e.preventDefault();
-    sendAction('boost-end');
+    sendAction?.('boost-end');
     setIsBoosting(false);
   };
 

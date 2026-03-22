@@ -5,9 +5,10 @@ import { Socket } from 'socket.io-client';
 interface Props {
   socket: Socket | null;
   roomId: string | null;
+  sendAction?: (action: string) => void;
 }
 
-export default function ShooterMobileController({ socket, roomId }: Props) {
+export default function ShooterMobileController({ socket, roomId, sendAction }: Props) {
   // Only minimal controls here (Fire Button + Hints)
 
   return (
@@ -28,25 +29,23 @@ export default function ShooterMobileController({ socket, roomId }: Props) {
           // Hold to Fire Logic
           onTouchStart={(e) => {
             e.preventDefault();
-            if (socket && roomId) {
-              socket.emit('controller-action', { action: 'fire-start', roomId });
+            if (sendAction) {
+              sendAction('fire-start');
               if (navigator.vibrate) navigator.vibrate(30);
             }
           }}
           onTouchEnd={(e) => {
             e.preventDefault();
-            if (socket && roomId) {
-              socket.emit('controller-action', { action: 'fire-end', roomId });
-            }
+            if (sendAction) sendAction('fire-end');
           }}
-          onMouseDown={(e) => {
-            if (socket && roomId) socket.emit('controller-action', { action: 'fire-start', roomId });
+          onMouseDown={() => {
+            if (sendAction) sendAction('fire-start');
           }}
           onMouseUp={() => {
-            if (socket && roomId) socket.emit('controller-action', { action: 'fire-end', roomId });
+            if (sendAction) sendAction('fire-end');
           }}
           onMouseLeave={() => {
-            if (socket && roomId) socket.emit('controller-action', { action: 'fire-end', roomId });
+            if (sendAction) sendAction('fire-end');
           }}
         >
           <div className="absolute inset-2 border-[2px] border-white/20 rounded-full" />
