@@ -11,6 +11,7 @@ export default function Home() {
   const { socket, joinLink, isControllerConnected, roomId } = useSocketConnection();
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
   const [audioReady, setAudioReady] = useState(false);
+  const [desktopTilt, setDesktopTilt] = useState({ x: 0, y: 0 });
 
   // 首次互動解鎖 AudioContext（瀏覽器政策需要 user gesture）
   useEffect(() => {
@@ -41,7 +42,18 @@ export default function Home() {
     socket.on('game-changed', (gameId: GameId) => {
       setCurrentView(gameId);
     });
-    return () => { socket.off('game-changed'); };
+    // Listen to gyro data for tilt ball in lobby
+    const handleGyro = (data: any) => {
+      setDesktopTilt({
+        x: Math.max(-1, Math.min(1, (data.gamma ?? 0) / 30)),
+        y: Math.max(-1, Math.min(1, (data.beta ?? 0) / 30)),
+      });
+    };
+    socket.on('update-game-state', handleGyro);
+    return () => {
+      socket.off('game-changed');
+      socket.off('update-game-state', handleGyro);
+    };
   }, [socket]);
 
   if (!socket) {
@@ -67,6 +79,7 @@ export default function Home() {
     <Lobby
       joinLink={joinLink}
       isControllerConnected={isControllerConnected}
+      tilt={desktopTilt}
       onSelectGame={(gameId) => {
         socket.emit('select-game', { roomId, gameId });
       }}

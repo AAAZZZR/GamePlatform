@@ -4,16 +4,18 @@ import React, { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { GAME_REGISTRY } from '@/games/registry';
 import Logo from '@/components/Logo';
+import TiltBall from '@/components/TiltBall';
 
 interface LobbyProps {
   joinLink: string;
   isControllerConnected: boolean;
+  tilt?: { x: number; y: number };
   onSelectGame: (gameId: string) => void;
 }
 
 // ─── 遊戲分類標籤 ──────────────────────────────────
 const CATEGORIES: Record<string, string[]> = {
-  'Action':  ['game1', 'game5'],
+  'Action':  ['game1', 'game5', 'game10'],
   'Arcade':  ['game2', 'game7'],
   'Racing':  ['game3', 'game4'],
   'Classic': ['game6'],
@@ -74,7 +76,7 @@ function StepCard({ num, icon, title, desc }: { num: number; icon: string; title
 }
 
 // ─── 主元件 ────────────────────────────────────────
-export default function Lobby({ joinLink, isControllerConnected, onSelectGame }: LobbyProps) {
+export default function Lobby({ joinLink, isControllerConnected, tilt, onSelectGame }: LobbyProps) {
   const [mounted, setMounted] = useState(false);
   const games = Object.entries(GAME_REGISTRY);
 
@@ -150,6 +152,14 @@ export default function Lobby({ joinLink, isControllerConnected, onSelectGame }:
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
                   <span className="text-emerald-400 font-bold tracking-wider text-sm">CONTROLLER CONNECTED</span>
                 </div>
+
+                {/* Tilt indicator ball — shows gyro is working */}
+                {tilt && (
+                  <div className="mt-2">
+                    <TiltBall tiltX={tilt.x} tiltY={tilt.y} size={36} range={100} />
+                  </div>
+                )}
+
                 <p className="text-gray-500 text-sm animate-bounce">↓ Choose a game below ↓</p>
               </div>
             )}

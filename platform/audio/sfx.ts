@@ -153,4 +153,39 @@ export const sfx = {
     tone(523, 0.06, 'square', 0.08, 0.15);
     tone(784, 0.06, 'square', 0.08, 0.2);
   },
+
+  // ━━━ Game 10: Skeet Shooter ━━━━━━━━━━━━━━━━━━━━━
+
+  /** Shotgun blast */
+  shotgunBlast() {
+    noise(0.15, 3000, 0.25);
+    tone(80, 0.2, 'sine', 0.3);
+    sweep(800, 100, 0.1, 'sawtooth', 0.08);
+  },
+
+  /** Disc shatter */
+  discShatter() {
+    debounce('shatter', 40, () => {
+      noise(0.1, 6000, 0.15, 'highpass');
+      tone(1800, 0.05, 'square', 0.1);
+      tone(2400, 0.04, 'square', 0.08, 0.03);
+    });
+  },
+
+  /** Disc launch whoosh */
+  discLaunch() {
+    sweep(200, 600, 0.25, 'sawtooth', 0.08);
+    noise(0.2, 2000, 0.06, 'highpass');
+  },
+
+  /** Shot miss */
+  shotMiss() {
+    tone(150, 0.15, 'triangle', 0.06);
+  },
+
+  /** Pull acknowledgement */
+  pullAck() {
+    tone(400, 0.03, 'square', 0.1);
+    tone(300, 0.04, 'square', 0.08, 0.03);
+  },
 };

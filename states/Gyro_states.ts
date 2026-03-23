@@ -21,6 +21,7 @@ export function useGyroController(
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [debug, setDebug] = useState<string>('Init...');
   const [gyroMode, setGyroMode] = useState<GyroMode>('natural');
+  const [tilt, setTilt] = useState({ x: 0, y: 0 }); // normalized -1..1
 
   // Natural: phone held at ~24° from flat; Flat: phone lying on table
   const offsetRef = useRef({ beta: 0, gamma: -24 });
@@ -99,6 +100,11 @@ export function useGyroController(
         socket.emit('gyro-data', { roomId, data: payload });
       }
 
+      // Normalized tilt for indicator ball (-1 to 1)
+      setTilt({
+        x: Math.max(-1, Math.min(1, gameX / 30)),
+        y: Math.max(-1, Math.min(1, gameY / 30)),
+      });
       setDebug(`X: ${Math.round(gameX)} | Y: ${Math.round(gameY)} | R_B:${Math.round(rawBeta)} R_G:${Math.round(rawGamma)}`);
     };
 
@@ -112,6 +118,7 @@ export function useGyroController(
   return {
     permissionGranted,
     debug,
+    tilt,
     gyroMode,
     requestPermission,
     handleCalibrate,

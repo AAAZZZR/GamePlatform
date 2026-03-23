@@ -21,6 +21,8 @@ import Game8 from './game8';
 import Game8_Mobile from './game8/MobileController';
 import Game9 from './game9';
 import Game9_Mobile from './game9/MobileController';
+import Game10 from './game10';
+import Game10_Mobile from './game10/MobileController';
 
 export const GAME_REGISTRY: Record<string, GameEntry> = {
   'game1': {
@@ -85,5 +87,12 @@ export const GAME_REGISTRY: Record<string, GameEntry> = {
     icon: '🛩️',
     desktop: Game9,
     mobile: Game9_Mobile,
+  },
+  'game10': {
+    name: 'Skeet Shooter',
+    description: 'Tilt to aim. Pull to launch discs. Shoot them down for combos!',
+    icon: '🎯',
+    desktop: Game10,
+    mobile: Game10_Mobile,
   },
 };

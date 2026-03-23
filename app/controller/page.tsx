@@ -9,8 +9,19 @@ import { GAME_REGISTRY } from '@/games/registry';
 import { GameId } from '@/types/game';
 import MobileLobby from '@/components/MobileLobby';
 import MobileGameOverlay from '@/components/MobileGameOverlay';
+import TiltBall from '@/components/TiltBall';
 
 function ControllerContent() {
+  // Lock body scroll on mobile controller page only
+  useEffect(() => {
+    document.documentElement.style.cssText = 'position:fixed;overflow:hidden;overscroll-behavior:none;touch-action:manipulation;width:100%;height:100%';
+    document.body.style.cssText = 'position:fixed;overflow:hidden;overscroll-behavior:none;width:100%;height:100%';
+    return () => {
+      document.documentElement.style.cssText = '';
+      document.body.style.cssText = '';
+    };
+  }, []);
+
   const searchParams = useSearchParams();
   const room = searchParams.get('room');
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
@@ -21,6 +32,7 @@ function ControllerContent() {
   const {
     permissionGranted,
     debug,
+    tilt,
     gyroMode,
     requestPermission,
     handleCalibrate,
@@ -105,46 +117,57 @@ function ControllerContent() {
           </div>
         ) : (
           <>
-            {/* 上方狀態列 */}
-            <div className="flex items-center justify-center w-full px-4 gap-2 relative shrink-0">
-              <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
-                {isConnected ? 'ON' : 'OFF'}
+            {/* 上方：連線狀態 + 模式選擇（獨立行） */}
+            <div className="flex flex-col items-center w-full shrink-0 gap-1 pt-1">
+              {/* Row 1: Connection + debug */}
+              <div className="flex items-center gap-2">
+                <div className={`flex items-center gap-1.5 px-3 py-0.5 rounded-full text-[10px] font-bold ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+                  {isConnected ? 'CONNECTED' : 'OFF'}
+                </div>
+                {currentView !== 'LOBBY' && (
+                  <button onClick={handleBackToLobby} className="text-[10px] text-gray-500 hover:text-white px-2 py-0.5 border border-white/10 rounded">
+                    ← Back
+                  </button>
+                )}
               </div>
 
-              {/* Gyro mode toggle */}
-              <div className="flex bg-black/30 rounded-full border border-white/10 overflow-hidden">
-                <button
-                  onClick={() => switchGyroMode('natural')}
-                  className={`px-2.5 py-1 text-[10px] font-bold transition-colors ${gyroMode === 'natural' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
-                >
-                  🤲 Natural
-                </button>
-                <button
-                  onClick={() => switchGyroMode('flat')}
-                  className={`px-2.5 py-1 text-[10px] font-bold transition-colors ${gyroMode === 'flat' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
-                >
-                  📱 Flat
-                </button>
+              {/* Row 2: Gyro mode toggle — full width, prominent */}
+              <div className="flex items-center gap-2 w-full px-6">
+                <span className="text-[10px] text-gray-500 font-mono shrink-0">HOLD</span>
+                <div className="flex flex-1 bg-black/40 rounded-xl border border-white/10 overflow-hidden">
+                  <button
+                    onClick={() => switchGyroMode('natural')}
+                    className={`flex-1 py-2 text-xs font-bold tracking-wide transition-colors ${gyroMode === 'natural' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
+                  >
+                    🤲 Natural Hold
+                  </button>
+                  <div className="w-px bg-white/10" />
+                  <button
+                    onClick={() => switchGyroMode('flat')}
+                    className={`flex-1 py-2 text-xs font-bold tracking-wide transition-colors ${gyroMode === 'flat' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
+                  >
+                    📱 Flat Table
+                  </button>
+                </div>
               </div>
-
-              <div className="bg-black/30 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 font-mono text-[9px] text-cyan-300">
-                {debug}
-              </div>
-
-              {currentView !== 'LOBBY' && (
-                <button onClick={handleBackToLobby} className="absolute left-4 text-[10px] text-gray-500 hover:text-white px-2 py-0.5 border border-white/10 rounded">
-                  ← Back
-                </button>
-              )}
             </div>
 
             {/* 中間動態區塊 */}
             <div className={`flex-1 min-h-0 flex w-full relative ${currentView === 'LOBBY' ? 'items-start overflow-y-auto' : 'items-center justify-center px-8'}`}>
 
-              {/* 狀態 A: 大廳 */}
+              {/* 狀態 A: 大廳 — 遊戲選單 + 光球 */}
               {currentView === 'LOBBY' && (
-                <MobileLobby onSelectGame={handleGameSelect} />
+                <div className="w-full h-full flex">
+                  {/* 左側遊戲列表 */}
+                  <div className="flex-1 min-w-0">
+                    <MobileLobby onSelectGame={handleGameSelect} />
+                  </div>
+                  {/* 右側光球指示器 */}
+                  <div className="shrink-0 flex items-center justify-center px-2">
+                    <TiltBall tiltX={tilt.x} tiltY={tilt.y} size={20} range={50} />
+                  </div>
+                </div>
               )}
 
               {/* 狀態 B: 遊戲控制器 */}
