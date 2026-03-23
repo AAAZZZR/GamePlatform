@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { GAME_REGISTRY } from '@/games/registry';
+import Logo from '@/components/Logo';
 
 interface LobbyProps {
   joinLink: string;
@@ -98,6 +99,10 @@ export default function Lobby({ joinLink, isControllerConnected, onSelectGame }:
         <section className="flex flex-col items-center justify-center min-h-screen px-6 py-16">
           {/* 標題 */}
           <div className={`text-center transition-all duration-1000 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
+            <div className="flex justify-center mb-6">
+              <Logo size={88} />
+            </div>
+
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-cyan-500/20 bg-cyan-500/[0.06] text-cyan-400 text-xs font-bold tracking-widest mb-8">
               <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
               GYROSCOPE POWERED
@@ -105,7 +110,7 @@ export default function Lobby({ joinLink, isControllerConnected, onSelectGame }:
 
             <h1 className="text-5xl sm:text-7xl font-black tracking-tight leading-none mb-4">
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-blue-400 to-violet-500">
-                Game Center
+                GyroPlay
               </span>
             </h1>
 

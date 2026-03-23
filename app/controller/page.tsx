@@ -90,7 +90,7 @@ function ControllerContent() {
       )}
 
       {/* 2. 主內容 */}
-      <div className="flex flex-col items-center justify-between h-full py-4">
+      <div className="flex flex-col items-center justify-between h-full py-2">
 
         {!permissionGranted ? (
           <div className="flex-1 flex items-center justify-center">
@@ -104,33 +104,25 @@ function ControllerContent() {
         ) : (
           <>
             {/* 上方狀態列 */}
-            <div className="flex flex-col items-center w-full px-4 gap-2 relative">
-              <div className={`flex items-center gap-2 px-4 py-1 rounded-full text-xs font-bold ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></div>
+            <div className="flex items-center justify-center w-full px-4 gap-3 relative shrink-0">
+              <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
                 {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
               </div>
 
+              <div className="bg-black/30 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 font-mono text-[9px] text-cyan-300">
+                {debug}
+              </div>
+
               {currentView !== 'LOBBY' && (
-                // Use centralized overlay for settings/back, but this top-left back button is specific to "Controller Page".
-                // Actually, MobileGameOverlay handles "Exit to Lobby" inside its menu. 
-                // So we can probably remove this explicit Back button if the design intends the overlay to handle it.
-                // But let's keep it as a fallback or remove it if redundant?
-                // User request: "settings backtolobby move out".
-                // MobileGameOverlay has settings which has exit.
-                // Let's keep this simple header back button as is for now or remove if overlap.
-                // The header back button is clean.
-                <button onClick={handleBackToLobby} className="absolute left-10 top-1 text-xs text-gray-500 hover:text-white px-2 py-1 border border-white/10 rounded">
+                <button onClick={handleBackToLobby} className="absolute left-4 text-[10px] text-gray-500 hover:text-white px-2 py-0.5 border border-white/10 rounded">
                   ← Back
                 </button>
               )}
-
-              <div className="bg-black/30 backdrop-blur-md px-3 py-1 rounded-lg border border-white/10 font-mono text-[10px] text-cyan-300">
-                {debug}
-              </div>
             </div>
 
             {/* 中間動態區塊 */}
-            <div className={`flex-1 flex w-full relative ${currentView === 'LOBBY' ? 'items-start overflow-y-auto px-4' : 'items-center justify-center px-8'}`}>
+            <div className={`flex-1 min-h-0 flex w-full relative ${currentView === 'LOBBY' ? 'items-start overflow-y-auto' : 'items-center justify-center px-8'}`}>
 
               {/* 狀態 A: 大廳 */}
               {currentView === 'LOBBY' && (

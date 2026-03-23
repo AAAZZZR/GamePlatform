@@ -25,7 +25,9 @@
       "Bash(curl -s https://www.google.com/search?q=popular+tilt+games+iPhone+2010+2011+2012+accelerometer -H 'User-Agent: Mozilla/5.0')",
       "Bash(wc -l /c/Users/Owner/Desktop/gyrogame/games/game7/*.tsx)",
       "Bash(grep -r \"viewport\\\\|meta\\\\|touch-action\\\\|user-select\\\\|overflow\\\\|scroll\" /c/Users/Owner/Desktop/gyrogame/app --include=*.tsx --include=*.ts --include=*.html -n)",
-      "Bash(find /c/Users/Owner/Desktop/gyrogame -name *.html -type f)"
+      "Bash(find /c/Users/Owner/Desktop/gyrogame -name *.html -type f)",
+      "Bash(find /c/Users/Owner/Desktop/gyrogame -name index.html -o -name *.html)",
+      "Bash(grep -r \"\\\\.svg\\\\|\\\\.ico\" /c/Users/Owner/Desktop/gyrogame --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)"
     ]
   }
 }
