@@ -27,7 +27,8 @@
       "Bash(grep -r \"viewport\\\\|meta\\\\|touch-action\\\\|user-select\\\\|overflow\\\\|scroll\" /c/Users/Owner/Desktop/gyrogame/app --include=*.tsx --include=*.ts --include=*.html -n)",
       "Bash(find /c/Users/Owner/Desktop/gyrogame -name *.html -type f)",
       "Bash(find /c/Users/Owner/Desktop/gyrogame -name index.html -o -name *.html)",
-      "Bash(grep -r \"\\\\.svg\\\\|\\\\.ico\" /c/Users/Owner/Desktop/gyrogame --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)"
+      "Bash(grep -r \"\\\\.svg\\\\|\\\\.ico\" /c/Users/Owner/Desktop/gyrogame --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)",
+      "Bash(grep:*)"
     ]
   }
 }

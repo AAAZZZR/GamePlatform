@@ -19,6 +19,8 @@ import Game7 from './game7';
 import Game7_Mobile from './game7/MobileController';
 import Game8 from './game8';
 import Game8_Mobile from './game8/MobileController';
+import Game9 from './game9';
+import Game9_Mobile from './game9/MobileController';
 
 export const GAME_REGISTRY: Record<string, GameEntry> = {
   'game1': {
@@ -76,5 +78,12 @@ export const GAME_REGISTRY: Record<string, GameEntry> = {
     icon: '✈️',
     desktop: Game8,
     mobile: Game8_Mobile,
+  },
+  'game9': {
+    name: 'Sky Fighter',
+    description: 'Tilt to fly your jet in 3D. Hold FIRE to shoot. Dogfight enemies!',
+    icon: '🛩️',
+    desktop: Game9,
+    mobile: Game9_Mobile,
   },
 };

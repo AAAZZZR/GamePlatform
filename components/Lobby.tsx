@@ -17,7 +17,7 @@ const CATEGORIES: Record<string, string[]> = {
   'Arcade':  ['game2', 'game7'],
   'Racing':  ['game3', 'game4'],
   'Classic': ['game6'],
-  'Flight':  ['game8'],
+  'Flight':  ['game8', 'game9'],
 };
 
 function getCategoryFor(id: string) {

@@ -123,4 +123,34 @@ export const sfx = {
   turn() {
     tone(660, 0.025, 'square', 0.04);
   },
+
+  // ━━━ Game 9: Sky Fighter ━━━━━━━━━━━━━━━━━━━━━━
+
+  /** 機砲連射 — 快速高頻噠噠 */
+  gunBurst() {
+    debounce('gun', 60, () => {
+      sweep(2000, 600, 0.04, 'square', 0.07);
+    });
+  },
+
+  /** 玩家被擊中 — 低頻衝擊 */
+  playerHit() {
+    noise(0.12, 800, 0.18);
+    tone(120, 0.12, 'sine', 0.2);
+  },
+
+  /** 彈藥補給 — 上升琶音 */
+  ammoPickup() {
+    tone(523, 0.06, 'square', 0.12);
+    tone(659, 0.06, 'square', 0.12, 0.06);
+    tone(784, 0.08, 'square', 0.15, 0.12);
+  },
+
+  /** 敵機擊毀 — 爆炸 + 短旋律 */
+  enemyDestroyed() {
+    noise(0.35, 1200, 0.22);
+    tone(80, 0.25, 'sine', 0.2);
+    tone(523, 0.06, 'square', 0.08, 0.15);
+    tone(784, 0.06, 'square', 0.08, 0.2);
+  },
 };
