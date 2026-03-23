@@ -1,8 +1,8 @@
 // games/game2/index.tsx — Space Brick (Enhanced)
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, MutableRefObject } from 'react';
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
-import { GyroData } from '@/types/game';
+import { NormalizedInput } from '@/platform/types';
 import { sfx } from '@/platform/audio';
 
 const GAME_CONFIG = {
@@ -82,7 +82,7 @@ function createBricksForLevel(level: number): Brick[] {
   return bricks;
 }
 
-function useGameLogic(paused: boolean = false) {
+function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boolean = false) {
   const getInitialState = (level = 1): GameState => ({
     paddleX: GAME_CONFIG.WIDTH / 2,
     paddleWidth: GAME_CONFIG.PADDLE_WIDTH,
@@ -105,13 +105,7 @@ function useGameLogic(paused: boolean = false) {
   const [gameState, setGameState] = useState<GameState>(getInitialState());
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
-  const inputRef = useRef({ moveX: 0 });
   const paddleWidthTimeoutRef = useRef<any>(null);
-
-  const updateGyro = useCallback((data: GyroData) => {
-    if (data.gamma !== null)
-      inputRef.current.moveX = (data.gamma / 30) * GAME_CONFIG.PADDLE_SPEED;
-  }, []);
 
   const launchBall = useCallback(() => {
     if (stateRef.current.status === 'READY') {
@@ -138,11 +132,10 @@ function useGameLogic(paused: boolean = false) {
     const loop = () => {
       if (stateRef.current.status === 'PLAYING' && !paused) {
         const current = stateRef.current;
-        const input = inputRef.current;
         const levelSpeedBonus = 1 + (current.level - 1) * 0.15;
 
-        // Paddle movement
-        let newPaddleX = current.paddleX + input.moveX;
+        // Paddle movement (uses platform normalized input)
+        let newPaddleX = current.paddleX + inputRef.current.move.x;
         const halfP = current.paddleWidth / 2;
         newPaddleX = Math.max(halfP, Math.min(GAME_CONFIG.WIDTH - halfP, newPaddleX));
 
@@ -306,10 +299,11 @@ function useGameLogic(paused: boolean = false) {
     return () => cancelAnimationFrame(loopId);
   }, [paused]);
 
-  return { gameState, updateGyro, launchBall, resetGame };
+  return { gameState, launchBall, resetGame };
 }
 
 interface Props {
+  inputRef: MutableRefObject<NormalizedInput>;
   socket: Socket;
   roomId: string;
   onExit?: () => void;
@@ -319,17 +313,17 @@ interface Props {
   onScoreChange?: (score: number) => void;
   onStatusChange?: (status: any) => void;
   settings?: any;
+  [key: string]: any;
 }
 
-export default function Game2({ socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
-  const { gameState, updateGyro, launchBall, resetGame } = useGameLogic(paused);
+export default function Game2({ inputRef, socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
+  const { gameState, launchBall, resetGame } = useGameLogic(inputRef, paused);
   const { paddleX, paddleWidth, balls, bricks, powerUps, hitFlashes, status, score, level } = gameState;
 
   useEffect(() => { if (onScoreChange) onScoreChange(score); }, [score, onScoreChange]);
   useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
 
   useEffect(() => {
-    const handleGyro = (data: GyroData) => updateGyro(data);
     const handleAction = (payload: any) => {
       const action = typeof payload === 'string' ? payload : payload.action;
       if (action === 'launch' || action === 'fire-start') launchBall();
@@ -337,14 +331,12 @@ export default function Game2({ socket, roomId, paused = false, onPause, onResum
       if (action === 'pause') onPause?.();
       if (action === 'resume') onResume?.();
     };
-    socket.on('update-game-state', handleGyro);
     socket.on('controller-action', handleAction);
     socket.emit('sync-game-status', { roomId, status });
     return () => {
-      socket.off('update-game-state');
       socket.off('controller-action');
     };
-  }, [socket, roomId, updateGyro, launchBall, resetGame, status, onPause, onResume]);
+  }, [socket, roomId, launchBall, resetGame, status, onPause, onResume]);
 
   const brickW = (GAME_CONFIG.WIDTH - (GAME_CONFIG.BRICK_COLS + 1) * GAME_CONFIG.BRICK_GAP) / GAME_CONFIG.BRICK_COLS;
 

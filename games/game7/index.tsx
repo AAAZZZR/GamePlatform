@@ -18,7 +18,7 @@ const CFG = {
   GRAVITY: 0.4,        // subtracted from vy each frame
   JUMP_VY: 12,         // upward velocity on normal bounce
   SPRING_VY: 20,       // upward velocity on spring bounce
-  MOVE_SPEED: 5,
+  MOVE_SPEED: 1,
   BULLET_SIZE: 5,
   BULLET_SPEED: 10,
   MONSTER_W: 28,

@@ -130,7 +130,7 @@ function ControllerContent() {
             </div>
 
             {/* 中間動態區塊 */}
-            <div className="flex-1 flex items-center justify-center w-full relative px-8">
+            <div className={`flex-1 flex w-full relative ${currentView === 'LOBBY' ? 'items-start overflow-y-auto px-4' : 'items-center justify-center px-8'}`}>
 
               {/* 狀態 A: 大廳 */}
               {currentView === 'LOBBY' && (

@@ -23,7 +23,9 @@
       "Bash(powershell -Command \"\\(Get-ChildItem -Path 'C:\\\\Users\\\\Owner\\\\Desktop\\\\gyrogame' -Recurse -File -Exclude '.git' | Where-Object { \\\\$_.FullName -notmatch 'node_modules|\\\\.next|\\\\.git' } | Measure-Object -Property Length -Sum\\).Sum / 1MB\")",
       "Bash(curl -s https://www.google.com/search?q=best+gyroscope+games+iPhone+early+2010+2011+classic+accelerometer+mobile+games -H 'User-Agent: Mozilla/5.0')",
       "Bash(curl -s https://www.google.com/search?q=popular+tilt+games+iPhone+2010+2011+2012+accelerometer -H 'User-Agent: Mozilla/5.0')",
-      "Bash(wc -l /c/Users/Owner/Desktop/gyrogame/games/game7/*.tsx)"
+      "Bash(wc -l /c/Users/Owner/Desktop/gyrogame/games/game7/*.tsx)",
+      "Bash(grep -r \"viewport\\\\|meta\\\\|touch-action\\\\|user-select\\\\|overflow\\\\|scroll\" /c/Users/Owner/Desktop/gyrogame/app --include=*.tsx --include=*.ts --include=*.html -n)",
+      "Bash(find /c/Users/Owner/Desktop/gyrogame -name *.html -type f)"
     ]
   }
 }

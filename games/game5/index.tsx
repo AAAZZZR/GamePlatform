@@ -15,12 +15,12 @@ const CFG = {
   ENEMY_SIZE: 14,
   ENEMY_HITBOX: 10,
   ENEMY_BASE_SPEED: 0.6,
-  ENEMY_SPEED_RAMP: 0.08,
+  ENEMY_SPEED_RAMP: 0.12,
   INITIAL_SPAWN_INTERVAL: 2200,
-  MIN_SPAWN_INTERVAL: 600,
-  SPAWN_INTERVAL_RAMP: 120,
+  MIN_SPAWN_INTERVAL: 400,
+  SPAWN_INTERVAL_RAMP: 180,
   INITIAL_WAVE_SIZE: 2,
-  MAX_WAVE_SIZE: 8,
+  MAX_WAVE_SIZE: 12,
   POWERUP_SIZE: 20,
   POWERUP_HITBOX: 16,
   POWERUP_SPAWN_INTERVAL: 6000,
@@ -31,6 +31,11 @@ const CFG = {
   FREEZE_DURATION: 3000,
   VORTEX_DURATION: 2000,
   VORTEX_RADIUS: 160,
+  SPEED_BOOST_DURATION: 4000,
+  SPEED_BOOST_MULTIPLIER: 2.2,
+  BUZZSAW_DURATION: 4000,
+  BUZZSAW_RADIUS: 35,
+  NUKE_MIN_GAME_TIME: 60,
   SCORE_PER_KILL: 10,
   SCORE_PER_SECOND: 1,
   DIFFICULTY_INTERVAL: 10,
@@ -41,7 +46,7 @@ const CFG = {
 // ==========================================
 // 2. Types
 // ==========================================
-type PowerupType = 'missile' | 'nuke' | 'freeze' | 'vortex';
+type PowerupType = 'missile' | 'nuke' | 'freeze' | 'vortex' | 'speed' | 'buzzsaw';
 
 interface Vec2 { x: number; y: number; }
 
@@ -115,6 +120,8 @@ interface GameState {
   vortex: VortexEffect | null;
   nukeFlash: number;
   flashes: FlashEffect[];
+  speedBoostUntil: number;
+  buzzsawUntil: number;
 }
 
 // ==========================================
@@ -125,6 +132,8 @@ const POWERUP_COLORS: Record<PowerupType, string> = {
   nuke: '#eab308',
   freeze: '#22c55e',
   vortex: '#a855f7',
+  speed: '#f97316',
+  buzzsaw: '#ec4899',
 };
 
 const POWERUP_LABELS: Record<PowerupType, string> = {
@@ -132,6 +141,8 @@ const POWERUP_LABELS: Record<PowerupType, string> = {
   nuke: 'N',
   freeze: 'F',
   vortex: 'V',
+  speed: 'S',
+  buzzsaw: 'G',
 };
 
 function dist(a: Vec2, b: Vec2): number {
@@ -212,6 +223,8 @@ function useGameLogic(
       vortex: null,
       nukeFlash: 0,
       flashes: [],
+      speedBoostUntil: 0,
+      buzzsawUntil: 0,
     };
   }, []);
 
@@ -279,8 +292,10 @@ function useGameLogic(
         const isFrozen = now < s.frozenUntil;
 
         // Player movement
-        let px = s.player.x + input.move.x * dt;
-        let py = s.player.y + input.move.y * dt;
+        const isSpeedBoosted = now < s.speedBoostUntil;
+        const speedMult = isSpeedBoosted ? CFG.SPEED_BOOST_MULTIPLIER : 1;
+        let px = s.player.x + input.move.x * dt * speedMult;
+        let py = s.player.y + input.move.y * dt * speedMult;
         px = Math.max(CFG.PLAYER_SIZE, Math.min(w - CFG.PLAYER_SIZE, px));
         py = Math.max(CFG.PLAYER_SIZE, Math.min(h - CFG.PLAYER_SIZE, py));
 
@@ -295,6 +310,9 @@ function useGameLogic(
         let frozenUntil = s.frozenUntil;
         let vortex = s.vortex;
         let nukeFlash = s.nukeFlash;
+        let speedBoostUntil = s.speedBoostUntil;
+        let buzzsawUntil = s.buzzsawUntil;
+        const isBuzzsaw = now < buzzsawUntil;
         let lastSpawnTime = s.lastSpawnTime;
         let lastPowerupTime = s.lastPowerupTime;
         let lastScoreTickTime = s.lastScoreTickTime;
@@ -324,15 +342,32 @@ function useGameLogic(
           }
         }
 
-        // Spawn powerups
+        // Spawn powerups (weighted random, nuke restricted)
         const powerupInterval = Math.max(
           CFG.POWERUP_MIN_INTERVAL,
           CFG.POWERUP_SPAWN_INTERVAL - diffLevel * 200
         );
         if (now - lastPowerupTime >= powerupInterval && powerups.filter(p => p.active).length < 3) {
           lastPowerupTime = now;
-          const types: PowerupType[] = ['missile', 'nuke', 'freeze', 'vortex'];
-          const type = types[Math.floor(Math.random() * types.length)];
+          // Build weighted pool
+          const pool: { type: PowerupType; weight: number }[] = [
+            { type: 'missile', weight: 20 },
+            { type: 'speed', weight: 28 },
+            { type: 'buzzsaw', weight: 15 },
+            { type: 'freeze', weight: 18 },
+            { type: 'vortex', weight: 12 },
+          ];
+          // Nuke: only after 60 seconds, low weight
+          if (gameTime >= CFG.NUKE_MIN_GAME_TIME) {
+            pool.push({ type: 'nuke', weight: 7 });
+          }
+          const totalWeight = pool.reduce((sum, p) => sum + p.weight, 0);
+          let roll = Math.random() * totalWeight;
+          let type: PowerupType = 'missile';
+          for (const entry of pool) {
+            roll -= entry.weight;
+            if (roll <= 0) { type = entry.type; break; }
+          }
           const pos = randomArenaPosition(w, h);
           powerups.push({
             id: uuidv4(),
@@ -493,6 +528,15 @@ function useGameLogic(
                 vortex = { x: px, y: py, startTime: now, duration: CFG.VORTEX_DURATION };
                 break;
               }
+              case 'speed': {
+                speedBoostUntil = now + CFG.SPEED_BOOST_DURATION;
+                break;
+              }
+              case 'buzzsaw': {
+                buzzsawUntil = now + CFG.BUZZSAW_DURATION;
+                sfx.crash();
+                break;
+              }
             }
           }
         }
@@ -500,9 +544,17 @@ function useGameLogic(
         // Player vs enemy collision
         for (const e of enemies) {
           if (!e.active) continue;
-          if (dist(playerPos, e) < CFG.PLAYER_HITBOX + CFG.ENEMY_HITBOX) {
-            gameOver = true;
-            break;
+          const hitDist = isBuzzsaw ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_HITBOX + CFG.ENEMY_HITBOX;
+          if (dist(playerPos, e) < hitDist) {
+            if (isBuzzsaw) {
+              // Buzzsaw mode: kill enemy on contact
+              e.active = false;
+              scoreAdd += CFG.SCORE_PER_KILL;
+              particles.push(...spawnParticles(e.x, e.y, '#ec4899', 6));
+            } else {
+              gameOver = true;
+              break;
+            }
           }
         }
 
@@ -537,6 +589,8 @@ function useGameLogic(
           vortex,
           nukeFlash,
           flashes,
+          speedBoostUntil,
+          buzzsawUntil,
           lastSpawnTime,
           lastPowerupTime,
           lastScoreTickTime,
@@ -591,6 +645,7 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
     player, enemies, powerups, missiles, particles,
     status, score, startTime, difficultyLevel,
     frozenUntil, vortex, nukeFlash, flashes,
+    speedBoostUntil, buzzsawUntil,
   } = gameState;
 
   const [dims, setDims] = useState({ w: 800, h: 600 });
@@ -604,6 +659,8 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
   const now = Date.now();
   const isFrozen = now < frozenUntil;
   const vortexActive = vortex && now - vortex.startTime < vortex.duration;
+  const isSpeedBoosted = now < speedBoostUntil;
+  const isBuzzsawActive = now < buzzsawUntil;
   const nukeFlashActive = nukeFlash > 0 && now - nukeFlash < 500;
   const nukeFlashOpacity = nukeFlashActive ? Math.max(0, 1 - (now - nukeFlash) / 500) : 0;
 
@@ -743,33 +800,85 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
       {status !== 'READY' && (
         <div className="absolute z-20 pointer-events-none"
           style={{
-            left: player.x - CFG.PLAYER_SIZE,
-            top: player.y - CFG.PLAYER_SIZE,
-            width: CFG.PLAYER_SIZE * 2,
-            height: CFG.PLAYER_SIZE * 2,
+            left: player.x - (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE),
+            top: player.y - (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE),
+            width: (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE) * 2,
+            height: (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE) * 2,
           }}
         >
-          {/* Glow ring */}
-          <div className="absolute inset-0 rounded-full"
-            style={{
-              background: 'radial-gradient(circle, rgba(103,232,249,0.15), transparent 70%)',
-            }}
-          />
-          {/* Arrow SVG */}
-          <svg viewBox="0 0 36 36" className="w-full h-full"
-            style={{
-              transform: `rotate(${isMoving ? moveAngle : 0}deg)`,
-              transition: 'transform 0.1s ease-out',
-              filter: 'drop-shadow(0 0 6px rgba(103,232,249,0.8)) drop-shadow(0 0 12px rgba(103,232,249,0.4))',
-            }}
-          >
-            <polygon
-              points="18,4 28,30 18,24 8,30"
-              fill="#67e8f9"
-              stroke="#a5f3fc"
-              strokeWidth="1"
-            />
-          </svg>
+          {isBuzzsawActive ? (
+            <>
+              {/* Buzzsaw gear */}
+              <svg viewBox="0 0 70 70" className="w-full h-full"
+                style={{
+                  animation: 'spin 0.4s linear infinite',
+                  filter: 'drop-shadow(0 0 10px rgba(236,72,153,0.8)) drop-shadow(0 0 20px rgba(236,72,153,0.4))',
+                }}
+              >
+                {/* Gear teeth */}
+                {Array.from({ length: 10 }).map((_, i) => {
+                  const angle = (i * 36) * Math.PI / 180;
+                  const outerR = 34;
+                  const innerR = 24;
+                  const toothW = 8;
+                  const cx = 35, cy = 35;
+                  const cos = Math.cos(angle);
+                  const sin = Math.sin(angle);
+                  const cos2 = Math.cos(angle + 0.15);
+                  const sin2 = Math.sin(angle + 0.15);
+                  const cos3 = Math.cos(angle - 0.15);
+                  const sin3 = Math.sin(angle - 0.15);
+                  return (
+                    <polygon key={i}
+                      points={`${cx + cos3 * innerR},${cy + sin3 * innerR} ${cx + cos * outerR},${cy + sin * outerR} ${cx + cos2 * innerR},${cy + sin2 * innerR}`}
+                      fill="#ec4899"
+                    />
+                  );
+                })}
+                <circle cx="35" cy="35" r="20" fill="#ec4899" />
+                <circle cx="35" cy="35" r="10" fill="#1e1e2e" />
+                <circle cx="35" cy="35" r="5" fill="#ec4899" />
+              </svg>
+            </>
+          ) : (
+            <>
+              {/* Normal player */}
+              {/* Speed boost trail */}
+              {isSpeedBoosted && (
+                <div className="absolute inset-0 rounded-full"
+                  style={{
+                    background: 'radial-gradient(circle, rgba(249,115,22,0.25), transparent 70%)',
+                    animation: 'pulse-fast 0.3s ease-in-out infinite',
+                  }}
+                />
+              )}
+              {/* Glow ring */}
+              <div className="absolute inset-0 rounded-full"
+                style={{
+                  background: isSpeedBoosted
+                    ? 'radial-gradient(circle, rgba(249,115,22,0.2), transparent 70%)'
+                    : 'radial-gradient(circle, rgba(103,232,249,0.15), transparent 70%)',
+                }}
+              />
+              {/* Arrow SVG */}
+              <svg viewBox="0 0 36 36" className="w-full h-full"
+                style={{
+                  transform: `rotate(${isMoving ? moveAngle : 0}deg)`,
+                  transition: 'transform 0.1s ease-out',
+                  filter: isSpeedBoosted
+                    ? 'drop-shadow(0 0 6px rgba(249,115,22,0.8)) drop-shadow(0 0 12px rgba(249,115,22,0.4))'
+                    : 'drop-shadow(0 0 6px rgba(103,232,249,0.8)) drop-shadow(0 0 12px rgba(103,232,249,0.4))',
+                }}
+              >
+                <polygon
+                  points="18,4 28,30 18,24 8,30"
+                  fill={isSpeedBoosted ? '#f97316' : '#67e8f9'}
+                  stroke={isSpeedBoosted ? '#fdba74' : '#a5f3fc'}
+                  strokeWidth="1"
+                />
+              </svg>
+            </>
+          )}
         </div>
       )}
 
@@ -791,7 +900,7 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
       )}
 
       {/* HUD: Active effects */}
-      {status === 'PLAYING' && (isFrozen || vortexActive) && (
+      {status === 'PLAYING' && (isFrozen || vortexActive || isSpeedBoosted || isBuzzsawActive) && (
         <div className="absolute top-5 right-5 z-30 flex flex-col gap-1">
           {isFrozen && (
             <div className="text-xs font-bold text-green-400 bg-green-900/30 px-3 py-1 rounded-full border border-green-500/30">
@@ -801,6 +910,16 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
           {vortexActive && vortex && (
             <div className="text-xs font-bold text-purple-400 bg-purple-900/30 px-3 py-1 rounded-full border border-purple-500/30">
               VORTEX {Math.ceil((vortex.duration - (now - vortex.startTime)) / 1000)}s
+            </div>
+          )}
+          {isSpeedBoosted && (
+            <div className="text-xs font-bold text-orange-400 bg-orange-900/30 px-3 py-1 rounded-full border border-orange-500/30">
+              SPEED {Math.ceil((speedBoostUntil - now) / 1000)}s
+            </div>
+          )}
+          {isBuzzsawActive && (
+            <div className="text-xs font-bold text-pink-400 bg-pink-900/30 px-3 py-1 rounded-full border border-pink-500/30">
+              BUZZSAW {Math.ceil((buzzsawUntil - now) / 1000)}s
             </div>
           )}
         </div>
@@ -816,8 +935,8 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
           <div className="text-white/40 text-sm tracking-widest animate-pulse">
             TILT TO MOVE
           </div>
-          <div className="flex gap-4 mt-4">
-            {(['missile', 'nuke', 'freeze', 'vortex'] as PowerupType[]).map(type => (
+          <div className="flex gap-4 mt-4 flex-wrap justify-center">
+            {(['missile', 'freeze', 'vortex', 'speed', 'buzzsaw', 'nuke'] as PowerupType[]).map(type => (
               <div key={type} className="flex flex-col items-center gap-1">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold"
                   style={{
@@ -849,11 +968,15 @@ export default function Game5({ inputRef, paused, callbacks }: Props) {
         </div>
       )}
 
-      {/* Vortex spin animation */}
+      {/* Animations */}
       <style>{`
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
+        }
+        @keyframes pulse-fast {
+          0%, 100% { transform: scale(1); opacity: 0.6; }
+          50% { transform: scale(1.3); opacity: 0.2; }
         }
       `}</style>
     </div>

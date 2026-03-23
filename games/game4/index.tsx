@@ -1,8 +1,8 @@
 // games/game4/index.tsx — Snake 🐍
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, MutableRefObject } from 'react';
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
-import { GyroData } from '@/types/game';
+import { NormalizedInput } from '@/platform/types';
 import { sfx } from '@/platform/audio';
 
 const GAME_CONFIG = {
@@ -16,7 +16,7 @@ const GAME_CONFIG = {
   SPEED_INCREASE: 2,    // ms faster per food eaten — gentler ramp
   SCORE_PER_FOOD: 100,
   BOOST_DURATION: 1500, // ms
-  TILT_THRESHOLD: 12,   // degrees to register — higher = less accidental turns
+  TILT_THRESHOLD: 6,    // normalized input threshold (~40% of max tilt)
 };
 
 type Dir = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
@@ -46,7 +46,7 @@ function randomFood(snake: Segment[]): Food {
   return { x, y, special: Math.random() < 0.2 };
 }
 
-function useGameLogic(paused: boolean = false) {
+function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boolean = false) {
   const getInitialState = (): GameState => {
     const startSnake = [
       { x: 12, y: 10 }, { x: 11, y: 10 }, { x: 10, y: 10 }
@@ -67,44 +67,41 @@ function useGameLogic(paused: boolean = false) {
   const [gameState, setGameState] = useState<GameState>(getInitialState());
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
-  const inputRef = useRef({ beta: 0, gamma: 0, boost: false });
+  const localInputRef = useRef({ boost: false });
   const boostTimeoutRef = useRef<any>(null);
+  const lastDirRef = useRef<Dir | null>(null);
 
-  const updateGyro = useCallback((data: GyroData) => {
-    const beta = data.beta ?? 0;   // forward/back tilt
-    const gamma = data.gamma ?? 0; // left/right tilt
-    inputRef.current.beta = beta;
-    inputRef.current.gamma = gamma;
-
-    // Map tilt to direction
+  // Poll platform input for direction changes (called from game loop interval)
+  const pollDirection = useCallback(() => {
+    const moveX = inputRef.current.move.x; // platform normalized: left/right
+    const moveY = inputRef.current.move.y; // platform normalized: forward/back
     const t = GAME_CONFIG.TILT_THRESHOLD;
     const { dir } = stateRef.current;
 
     let newDir: Dir | null = null;
-    if (Math.abs(gamma) > Math.abs(beta)) {
-      // Horizontal tilt dominates → LEFT/RIGHT
-      if (gamma > t && dir !== 'LEFT') newDir = 'RIGHT';
-      else if (gamma < -t && dir !== 'RIGHT') newDir = 'LEFT';
+    if (Math.abs(moveX) > Math.abs(moveY)) {
+      if (moveX > t && dir !== 'LEFT') newDir = 'RIGHT';
+      else if (moveX < -t && dir !== 'RIGHT') newDir = 'LEFT';
     } else {
-      // Vertical tilt dominates → UP/DOWN
-      if (beta > t && dir !== 'DOWN') newDir = 'UP';
-      else if (beta < -t && dir !== 'UP') newDir = 'DOWN';
+      if (moveY > t && dir !== 'DOWN') newDir = 'UP';
+      else if (moveY < -t && dir !== 'UP') newDir = 'DOWN';
     }
 
-    if (newDir && newDir !== stateRef.current.nextDir) {
+    if (newDir && newDir !== lastDirRef.current) {
+      lastDirRef.current = newDir;
       sfx.turn();
       setGameState(prev => ({ ...prev, nextDir: newDir as Dir }));
     }
-  }, []);
+  }, [inputRef]);
 
   const setBoost = useCallback((active: boolean) => {
-    inputRef.current.boost = active;
+    localInputRef.current.boost = active;
     if (active) {
       setGameState(prev => ({ ...prev, boosting: true }));
       if (boostTimeoutRef.current) clearTimeout(boostTimeoutRef.current);
       boostTimeoutRef.current = setTimeout(() => {
         setGameState(prev => ({ ...prev, boosting: false }));
-        inputRef.current.boost = false;
+        localInputRef.current.boost = false;
       }, GAME_CONFIG.BOOST_DURATION);
     } else {
       if (boostTimeoutRef.current) clearTimeout(boostTimeoutRef.current);
@@ -126,9 +123,11 @@ function useGameLogic(paused: boolean = false) {
 
     const step = () => {
       if (stateRef.current.status !== 'PLAYING' || paused) {
+        pollDirection(); // still update direction while waiting
         timeoutId = setTimeout(step, 100);
         return;
       }
+      pollDirection(); // read latest tilt direction from platform input
       const current = stateRef.current;
       const effectiveSpeed = current.boosting
         ? Math.max(current.speed * 0.5, 40)
@@ -215,12 +214,13 @@ function useGameLogic(paused: boolean = false) {
 
     timeoutId = setTimeout(step, stateRef.current.speed);
     return () => clearTimeout(timeoutId);
-  }, [paused]);
+  }, [paused, pollDirection]);
 
-  return { gameState, updateGyro, setBoost, startGame, resetGame };
+  return { gameState, setBoost, startGame, resetGame };
 }
 
 interface Props {
+  inputRef: MutableRefObject<NormalizedInput>;
   socket: Socket;
   roomId: string;
   onExit?: () => void;
@@ -230,17 +230,17 @@ interface Props {
   onScoreChange?: (score: number) => void;
   onStatusChange?: (status: any) => void;
   settings?: any;
+  [key: string]: any;
 }
 
-export default function Game4({ socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
-  const { gameState, updateGyro, setBoost, startGame, resetGame } = useGameLogic(paused);
+export default function Game4({ inputRef, socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
+  const { gameState, setBoost, startGame, resetGame } = useGameLogic(inputRef, paused);
   const { snake, food, particles, status, score, dir, boosting } = gameState;
 
   useEffect(() => { if (onScoreChange) onScoreChange(score); }, [score, onScoreChange]);
   useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
 
   useEffect(() => {
-    const handleGyro = (data: GyroData) => updateGyro(data);
     const handleAction = (payload: any) => {
       const action = typeof payload === 'string' ? payload : payload.action;
       if (action === 'boost-start') { setBoost(true); sfx.snakeBoost(); }
@@ -249,25 +249,13 @@ export default function Game4({ socket, roomId, paused = false, onPause, onResum
       if (action === 'restart-game') resetGame();
       if (action === 'pause') onPause?.();
       if (action === 'resume') onResume?.();
-      // D-pad fallback
-      if (action === 'dir-up') setGameState_dir('UP');
-      if (action === 'dir-down') setGameState_dir('DOWN');
-      if (action === 'dir-left') setGameState_dir('LEFT');
-      if (action === 'dir-right') setGameState_dir('RIGHT');
     };
-    socket.on('update-game-state', handleGyro);
     socket.on('controller-action', handleAction);
     socket.emit('sync-game-status', { roomId, status });
     return () => {
-      socket.off('update-game-state');
       socket.off('controller-action');
     };
-  }, [socket, updateGyro, setBoost, startGame, resetGame, status, onPause, onResume, roomId]);
-
-  // Allow d-pad direction changes
-  const setGameState_dir = useCallback((newDir: Dir) => {
-    // Will be set via game state for next step
-  }, []);
+  }, [socket, setBoost, startGame, resetGame, status, onPause, onResume, roomId]);
 
   const dirArrow = { UP: '↑', DOWN: '↓', LEFT: '←', RIGHT: '→' }[dir];
 

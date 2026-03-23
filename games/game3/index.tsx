@@ -1,8 +1,8 @@
 // games/game3/index.tsx — Neon Racing (Enhanced)
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo, MutableRefObject } from 'react';
 import { Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
-import { GyroData } from '@/types/game';
+import { NormalizedInput } from '@/platform/types';
 import { sfx } from '@/platform/audio';
 
 const GAME_CONFIG = {
@@ -12,7 +12,7 @@ const GAME_CONFIG = {
   CAR_HEIGHT: 70,
   BASE_SPEED: 3,
   NITRO_SPEED: 14,
-  ROTATION_SENSITIVITY: 1.0,
+  STEER_FACTOR: 2.0,        // converts normalized input to steering degrees (speed*STEER_FACTOR = max steer°)
   ROAD_WIDTH: 360,
   SEGMENT_HEIGHT: 20,
   VISIBLE_SEGMENTS: 42,
@@ -48,7 +48,7 @@ interface GameState {
   coinsCollected: number;
 }
 
-function useGameLogic(paused: boolean = false) {
+function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boolean = false) {
   const getRoadCurve = useCallback((y: number) => {
     // Curves get more intense the further you go
     const intensity = Math.min(1, y / 8000); // ramp up over distance
@@ -73,16 +73,11 @@ function useGameLogic(paused: boolean = false) {
   const [gameState, setGameState] = useState<GameState>(getInitialState());
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
-  const inputRef = useRef({ steer: 0, nitro: false });
+  const localInputRef = useRef({ nitro: false });
   let obstacleSpawnCounter = useRef(0);
 
-  const updateGyro = useCallback((data: GyroData) => {
-    if (data.gamma !== null)
-      inputRef.current.steer = data.gamma * GAME_CONFIG.ROTATION_SENSITIVITY;
-  }, []);
-
   const setNitro = useCallback((active: boolean) => {
-    inputRef.current.nitro = active;
+    localInputRef.current.nitro = active;
   }, []);
 
   const startGame = useCallback(() => {
@@ -91,7 +86,7 @@ function useGameLogic(paused: boolean = false) {
 
   const resetGame = useCallback(() => {
     setGameState(getInitialState());
-    inputRef.current = { steer: 0, nitro: false };
+    localInputRef.current = { nitro: false };
     obstacleSpawnCounter.current = 0;
   }, []);
 
@@ -101,15 +96,16 @@ function useGameLogic(paused: boolean = false) {
     const loop = () => {
       if (stateRef.current.status === 'PLAYING' && !paused) {
         const current = stateRef.current;
-        const input = inputRef.current;
+        const steer = inputRef.current.move.x * GAME_CONFIG.STEER_FACTOR; // platform normalized → steering degrees
+        const nitro = localInputRef.current.nitro;
 
         // Speed with difficulty progression
         const gameTime = current.distance / 500; // difficulty ramps with distance
         const speedBonus = Math.min(gameTime * 0.15, 6);
-        const speed = (input.nitro ? GAME_CONFIG.NITRO_SPEED : GAME_CONFIG.BASE_SPEED) + speedBonus;
+        const speed = (nitro ? GAME_CONFIG.NITRO_SPEED : GAME_CONFIG.BASE_SPEED) + speedBonus;
         const obstacleChance = Math.min(GAME_CONFIG.INITIAL_OBSTACLE_CHANCE + gameTime * 0.008, GAME_CONFIG.MAX_OBSTACLE_CHANCE);
 
-        const rad = (input.steer * Math.PI) / 180;
+        const rad = (steer * Math.PI) / 180;
         const dx = Math.sin(rad) * speed;
         const dy = Math.cos(rad) * speed;
         let newCarX = current.carX + dx;
@@ -178,7 +174,7 @@ function useGameLogic(paused: boolean = false) {
         const newSpeedLines = current.speedLines.map(sl => ({
           ...sl,
           y: sl.y + speed * 2,
-          opacity: input.nitro ? Math.min(sl.opacity + 0.1, 0.7) : Math.max(sl.opacity - 0.05, 0),
+          opacity: nitro ? Math.min(sl.opacity + 0.1, 0.7) : Math.max(sl.opacity - 0.05, 0),
           ...(sl.y > GAME_CONFIG.HEIGHT ? { y: 0, x: Math.random() * GAME_CONFIG.WIDTH } : {})
         }));
 
@@ -188,8 +184,8 @@ function useGameLogic(paused: boolean = false) {
           ...prev,
           distance: newDistance,
           carX: newCarX,
-          carAngle: Math.max(-25, Math.min(25, input.steer * 0.3)),
-          isNitro: input.nitro,
+          carAngle: Math.max(-25, Math.min(25, steer * 0.3)),
+          isNitro: nitro,
           obstacles: newObstacles,
           coins: newCoins.filter(c => c.active),
           speedLines: newSpeedLines,
@@ -205,10 +201,11 @@ function useGameLogic(paused: boolean = false) {
     return () => cancelAnimationFrame(loopId);
   }, [paused, getRoadCurve]);
 
-  return { gameState, updateGyro, setNitro, startGame, resetGame, getRoadCurve };
+  return { gameState, setNitro, startGame, resetGame, getRoadCurve };
 }
 
 interface Props {
+  inputRef: MutableRefObject<NormalizedInput>;
   socket: Socket;
   roomId: string;
   onExit?: () => void;
@@ -218,17 +215,17 @@ interface Props {
   onScoreChange?: (score: number) => void;
   onStatusChange?: (status: any) => void;
   settings?: any;
+  [key: string]: any;
 }
 
-export default function Game3({ socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
-  const { gameState, updateGyro, setNitro, startGame, resetGame, getRoadCurve } = useGameLogic(paused);
+export default function Game3({ inputRef, socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
+  const { gameState, setNitro, startGame, resetGame, getRoadCurve } = useGameLogic(inputRef, paused);
   const { distance, carX, carAngle, obstacles, coins, speedLines, status, score, isNitro, coinsCollected } = gameState;
 
   useEffect(() => { if (onScoreChange) onScoreChange(score); }, [score, onScoreChange]);
   useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
 
   useEffect(() => {
-    const handleGyro = (data: GyroData) => updateGyro(data);
     const handleAction = (payload: any) => {
       const action = typeof payload === 'string' ? payload : payload.action;
       if (action === 'nitro-start') { setNitro(true); sfx.nitroOn(); }
@@ -238,14 +235,12 @@ export default function Game3({ socket, roomId, paused = false, onPause, onResum
       if (action === 'pause') onPause?.();
       if (action === 'resume') onResume?.();
     };
-    socket.on('update-game-state', handleGyro);
     socket.on('controller-action', handleAction);
     socket.emit('sync-game-status', { roomId, status });
     return () => {
-      socket.off('update-game-state');
       socket.off('controller-action');
     };
-  }, [socket, roomId, updateGyro, setNitro, resetGame, status, onPause, onResume]);
+  }, [socket, roomId, setNitro, resetGame, status, onPause, onResume]);
 
   const roadSegments = useMemo(() => {
     const segments = [];
