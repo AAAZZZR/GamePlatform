@@ -1,354 +1,547 @@
-// games/game4/index.tsx — Snake 🐍
-import React, { useEffect, useState, useRef, useCallback, MutableRefObject } from 'react';
-import { Socket } from 'socket.io-client';
-import { v4 as uuidv4 } from 'uuid';
-import { NormalizedInput } from '@/platform/types';
+// games/game4/index.tsx — Tunnel Runner (R3F 3D)
+'use client';
+
+import React, { useEffect, useState, useRef, useCallback, useMemo, MutableRefObject } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { Line } from '@react-three/drei';
+import * as THREE from 'three';
+import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
 import { sfx } from '@/platform/audio';
 
-const GAME_CONFIG = {
-  COLS: 25,
-  ROWS: 20,
-  CELL: 28,
-  get WIDTH() { return this.COLS * this.CELL; },
-  get HEIGHT() { return this.ROWS * this.CELL; },
-  INITIAL_SPEED: 200,   // ms per step — start slow, ramp up
-  MIN_SPEED: 70,
-  SPEED_INCREASE: 2,    // ms faster per food eaten — gentler ramp
-  SCORE_PER_FOOD: 100,
-  BOOST_DURATION: 1500, // ms
-  TILT_THRESHOLD: 6,    // normalized input threshold (~40% of max tilt)
+// ==========================================
+// 1. Configuration
+// ==========================================
+const CFG = {
+  // Tunnel
+  TUNNEL_HW: 6,       // half-width
+  TUNNEL_HH: 4,       // half-height
+  RING_SPACING: 12,
+  RENDER_DIST: 140,
+  CLEANUP_BEHIND: 15,
+  // Player
+  PLAYER_R: 0.35,
+  PLAYER_Z: -8,       // player's Z in scene (ahead of camera)
+  // Speed
+  BASE_SPEED: 0.25,
+  SPEED_RAMP: 0.004,  // per second
+  MAX_SPEED: 1.0,
+  BOOST_MULT: 1.6,
+  BOOST_DURATION: 2000,
+  // Gates
+  GATE_SPACING_MIN: 18,
+  GATE_SPACING_MAX: 28,
+  GATE_THICKNESS: 0.4,
+  INITIAL_GAP: 5.0,
+  MIN_GAP: 2.2,
+  GAP_SHRINK: 0.06,   // per gate
+  // Orbs
+  ORB_SPACING: 10,
+  ORB_R: 0.3,
+  ORB_SCORE: 100,
+  // Scoring
+  SCORE_PER_DIST: 2,
 };
 
-type Dir = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
+// Neon colors
+const NEON = ['#ff0055', '#ff6600', '#ffcc00', '#00ff88', '#00ccff', '#aa44ff', '#ff44aa'];
 
-interface Segment { x: number; y: number; }
-interface Food { x: number; y: number; special: boolean; }
-interface Particle { id: string; x: number; y: number; vx: number; vy: number; life: number; color: string; }
+// ==========================================
+// 2. Types
+// ==========================================
+interface Gate {
+  id: number;
+  z: number;
+  gapX: number;
+  gapY: number;
+  gapW: number;
+  gapH: number;
+  color: string;
+}
+
+interface Orb {
+  id: number;
+  z: number;
+  x: number;
+  y: number;
+  collected: boolean;
+}
 
 interface GameState {
-  snake: Segment[];
-  dir: Dir;
-  nextDir: Dir;
-  food: Food;
-  particles: Particle[];
-  status: 'READY' | 'PLAYING' | 'GAME_OVER';
-  score: number;
+  px: number;
+  py: number;
+  distance: number;
   speed: number;
-  boosting: boolean;
+  gates: Gate[];
+  orbs: Orb[];
+  status: GameStatus;
+  score: number;
+  startTime: number;
+  nextGateZ: number;
+  nextOrbZ: number;
+  gateCount: number;
+  boostUntil: number;
 }
 
-function randomFood(snake: Segment[]): Food {
-  let x: number, y: number;
-  do {
-    x = Math.floor(Math.random() * GAME_CONFIG.COLS);
-    y = Math.floor(Math.random() * GAME_CONFIG.ROWS);
-  } while (snake.some(s => s.x === x && s.y === y));
-  return { x, y, special: Math.random() < 0.2 };
-}
+// ==========================================
+// 3. Helpers
+// ==========================================
+let _id = 0;
+function nid() { return ++_id; }
 
-function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boolean = false) {
-  const getInitialState = (): GameState => {
-    const startSnake = [
-      { x: 12, y: 10 }, { x: 11, y: 10 }, { x: 10, y: 10 }
-    ];
-    return {
-      snake: startSnake,
-      dir: 'RIGHT',
-      nextDir: 'RIGHT',
-      food: randomFood(startSnake),
-      particles: [],
-      status: 'READY',
-      score: 0,
-      speed: GAME_CONFIG.INITIAL_SPEED,
-      boosting: false
-    };
+function makeGate(z: number, count: number): Gate {
+  const gapW = Math.max(CFG.MIN_GAP, CFG.INITIAL_GAP - count * CFG.GAP_SHRINK);
+  const gapH = Math.max(CFG.MIN_GAP * 0.7, (CFG.INITIAL_GAP * 0.8) - count * CFG.GAP_SHRINK * 0.7);
+  const maxOffX = CFG.TUNNEL_HW - gapW / 2 - 0.5;
+  const maxOffY = CFG.TUNNEL_HH - gapH / 2 - 0.5;
+  return {
+    id: nid(),
+    z,
+    gapX: (Math.random() - 0.5) * 2 * maxOffX,
+    gapY: (Math.random() - 0.5) * 2 * maxOffY,
+    gapW,
+    gapH,
+    color: NEON[Math.floor(Math.random() * NEON.length)],
   };
-
-  const [gameState, setGameState] = useState<GameState>(getInitialState());
-  const stateRef = useRef(gameState);
-  stateRef.current = gameState;
-  const localInputRef = useRef({ boost: false });
-  const boostTimeoutRef = useRef<any>(null);
-  const lastDirRef = useRef<Dir | null>(null);
-
-  // Poll platform input for direction changes (called from game loop interval)
-  const pollDirection = useCallback(() => {
-    const moveX = inputRef.current.move.x; // platform normalized: left/right
-    const moveY = inputRef.current.move.y; // platform normalized: forward/back
-    const t = GAME_CONFIG.TILT_THRESHOLD;
-    const { dir } = stateRef.current;
-
-    let newDir: Dir | null = null;
-    if (Math.abs(moveX) > Math.abs(moveY)) {
-      if (moveX > t && dir !== 'LEFT') newDir = 'RIGHT';
-      else if (moveX < -t && dir !== 'RIGHT') newDir = 'LEFT';
-    } else {
-      if (moveY > t && dir !== 'DOWN') newDir = 'UP';
-      else if (moveY < -t && dir !== 'UP') newDir = 'DOWN';
-    }
-
-    if (newDir && newDir !== lastDirRef.current) {
-      lastDirRef.current = newDir;
-      sfx.turn();
-      setGameState(prev => ({ ...prev, nextDir: newDir as Dir }));
-    }
-  }, [inputRef]);
-
-  const setBoost = useCallback((active: boolean) => {
-    localInputRef.current.boost = active;
-    if (active) {
-      setGameState(prev => ({ ...prev, boosting: true }));
-      if (boostTimeoutRef.current) clearTimeout(boostTimeoutRef.current);
-      boostTimeoutRef.current = setTimeout(() => {
-        setGameState(prev => ({ ...prev, boosting: false }));
-        localInputRef.current.boost = false;
-      }, GAME_CONFIG.BOOST_DURATION);
-    } else {
-      if (boostTimeoutRef.current) clearTimeout(boostTimeoutRef.current);
-      setGameState(prev => ({ ...prev, boosting: false }));
-    }
-  }, []);
-
-  const startGame = useCallback(() => {
-    setGameState(prev => ({ ...prev, status: 'PLAYING' }));
-  }, []);
-
-  const resetGame = useCallback(() => {
-    setGameState(getInitialState());
-  }, []);
-
-  // Game loop (step-based)
-  useEffect(() => {
-    let timeoutId: any;
-
-    const step = () => {
-      if (stateRef.current.status !== 'PLAYING' || paused) {
-        pollDirection(); // still update direction while waiting
-        timeoutId = setTimeout(step, 100);
-        return;
-      }
-      pollDirection(); // read latest tilt direction from platform input
-      const current = stateRef.current;
-      const effectiveSpeed = current.boosting
-        ? Math.max(current.speed * 0.5, 40)
-        : current.speed;
-
-      const { snake, nextDir, food, particles } = current;
-      const dir = nextDir;
-
-      // Move head
-      const head = snake[0];
-      let newHead: Segment;
-      switch (dir) {
-        case 'UP': newHead = { x: head.x, y: head.y - 1 }; break;
-        case 'DOWN': newHead = { x: head.x, y: head.y + 1 }; break;
-        case 'LEFT': newHead = { x: head.x - 1, y: head.y }; break;
-        case 'RIGHT': newHead = { x: head.x + 1, y: head.y }; break;
-      }
-
-      // Wall collision
-      if (newHead.x < 0 || newHead.x >= GAME_CONFIG.COLS ||
-        newHead.y < 0 || newHead.y >= GAME_CONFIG.ROWS) {
-        setGameState(prev => ({ ...prev, status: 'GAME_OVER' }));
-        return;
-      }
-
-      // Self collision
-      if (snake.some(s => s.x === newHead.x && s.y === newHead.y)) {
-        setGameState(prev => ({ ...prev, status: 'GAME_OVER' }));
-        return;
-      }
-
-      // Eat food?
-      const ate = newHead.x === food.x && newHead.y === food.y;
-      const newSnake = [newHead, ...snake];
-      if (!ate) newSnake.pop(); // don't grow if not eating
-
-      let newFood = food;
-      let newScore = current.score;
-      let newSpeed = current.speed;
-      const newParticles = [...particles];
-
-      if (ate) {
-        if (food.special) sfx.eatSpecial(); else sfx.eat();
-        newScore += food.special ? GAME_CONFIG.SCORE_PER_FOOD * 3 : GAME_CONFIG.SCORE_PER_FOOD;
-        newFood = randomFood(newSnake);
-        newSpeed = Math.max(GAME_CONFIG.MIN_SPEED, current.speed - GAME_CONFIG.SPEED_INCREASE);
-
-        // Spawn food particles
-        const colors = food.special
-          ? ['#fbbf24', '#f59e0b', '#fde047', '#fff']
-          : ['#4ade80', '#22c55e', '#86efac', '#fff'];
-        for (let i = 0; i < 10; i++) {
-          const angle = (Math.PI * 2 * i) / 10;
-          const speed = Math.random() * 3 + 1;
-          newParticles.push({
-            id: uuidv4(),
-            x: food.x * GAME_CONFIG.CELL + GAME_CONFIG.CELL / 2,
-            y: food.y * GAME_CONFIG.CELL + GAME_CONFIG.CELL / 2,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
-            life: 1,
-            color: colors[Math.floor(Math.random() * colors.length)]
-          });
-        }
-      }
-
-      // Age particles
-      const agedParticles = newParticles
-        .map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, life: p.life - 0.06 }))
-        .filter(p => p.life > 0);
-
-      setGameState(prev => ({
-        ...prev,
-        snake: newSnake,
-        dir,
-        food: newFood,
-        particles: agedParticles,
-        score: newScore,
-        speed: newSpeed
-      }));
-
-      timeoutId = setTimeout(step, effectiveSpeed);
-    };
-
-    timeoutId = setTimeout(step, stateRef.current.speed);
-    return () => clearTimeout(timeoutId);
-  }, [paused, pollDirection]);
-
-  return { gameState, setBoost, startGame, resetGame };
 }
 
+function makeOrb(z: number): Orb {
+  return {
+    id: nid(),
+    z,
+    x: (Math.random() - 0.5) * (CFG.TUNNEL_HW * 2 - 2),
+    y: (Math.random() - 0.5) * (CFG.TUNNEL_HH * 2 - 2),
+    collected: false,
+  };
+}
+
+// ==========================================
+// 4. Game Logic Hook
+// ==========================================
+function useGameLogic(
+  inputRef: MutableRefObject<NormalizedInput>,
+  paused: boolean,
+  callbacks: GameCallbacks,
+) {
+  const getInitialState = useCallback((): GameState => {
+    _id = 0;
+    const gates: Gate[] = [];
+    const orbs: Orb[] = [];
+    let gz = 40;
+    for (let i = 0; i < 8; i++) {
+      gates.push(makeGate(gz, i));
+      gz += CFG.GATE_SPACING_MIN + Math.random() * (CFG.GATE_SPACING_MAX - CFG.GATE_SPACING_MIN);
+    }
+    let oz = 20;
+    for (let i = 0; i < 10; i++) {
+      orbs.push(makeOrb(oz));
+      oz += CFG.ORB_SPACING + Math.random() * 5;
+    }
+    return {
+      px: 0, py: 0, distance: 0, speed: CFG.BASE_SPEED,
+      gates, orbs,
+      status: 'READY', score: 0, startTime: 0,
+      nextGateZ: gz, nextOrbZ: oz, gateCount: 8,
+      boostUntil: 0,
+    };
+  }, []);
+
+  const [gs, setGs] = useState<GameState>(getInitialState);
+  const stateRef = useRef(gs);
+  stateRef.current = gs;
+  const cbRef = useRef(callbacks);
+  cbRef.current = callbacks;
+
+  useEffect(() => { cbRef.current.onScoreChange(gs.score); }, [gs.score]);
+  useEffect(() => { cbRef.current.onStatusChange(gs.status); }, [gs.status]);
+
+  useEffect(() => {
+    let loopId: number;
+    let prevT = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min((now - prevT) / 16.667, 3);
+      prevT = now;
+      const input = inputRef.current;
+      const s = stateRef.current;
+
+      // Lifecycle
+      if (s.status === 'READY' && input.actions['start-game']) {
+        setGs(prev => ({ ...prev, status: 'PLAYING', startTime: Date.now() }));
+        sfx.start();
+      }
+      if (input.actions['restart-game']) {
+        setGs(getInitialState());
+      }
+
+      if (s.status === 'PLAYING' && !paused) {
+        const nowMs = Date.now();
+        const elapsed = (nowMs - s.startTime) / 1000;
+        const isBoosting = nowMs < s.boostUntil;
+        const speed = Math.min(CFG.MAX_SPEED, CFG.BASE_SPEED + elapsed * CFG.SPEED_RAMP)
+          * (isBoosting ? CFG.BOOST_MULT : 1);
+
+        // Player movement
+        let px = s.px + input.move.x * dt * 0.12;
+        let py = s.py + input.move.y * dt * 0.12;
+        const margin = CFG.PLAYER_R + 0.2;
+        px = Math.max(-CFG.TUNNEL_HW + margin, Math.min(CFG.TUNNEL_HW - margin, px));
+        py = Math.max(-CFG.TUNNEL_HH + margin, Math.min(CFG.TUNNEL_HH - margin, py));
+
+        // Advance distance
+        const distance = s.distance + speed * dt;
+        let score = s.score + Math.floor(speed * dt * CFG.SCORE_PER_DIST);
+
+        // Gate collision
+        let gameOver = false;
+        for (const g of s.gates) {
+          const relZ = g.z - distance;
+          if (relZ > -0.5 && relZ < 0.5) {
+            // Player is passing through this gate
+            const inGapX = Math.abs(px - g.gapX) < (g.gapW / 2 - CFG.PLAYER_R);
+            const inGapY = Math.abs(py - g.gapY) < (g.gapH / 2 - CFG.PLAYER_R);
+            if (!inGapX || !inGapY) {
+              gameOver = true;
+              sfx.crash();
+              break;
+            }
+          }
+        }
+
+        // Orb collection
+        const orbs = [...s.orbs];
+        for (const o of orbs) {
+          if (o.collected) continue;
+          const relZ = o.z - distance;
+          if (relZ > -1 && relZ < 1) {
+            const dx = px - o.x;
+            const dy = py - o.y;
+            if (Math.sqrt(dx * dx + dy * dy) < CFG.ORB_R + CFG.PLAYER_R) {
+              o.collected = true;
+              score += CFG.ORB_SCORE;
+              sfx.coin();
+            }
+          }
+        }
+
+        // Boost action
+        let boostUntil = s.boostUntil;
+        if (input.actions['boost'] && nowMs >= s.boostUntil) {
+          boostUntil = nowMs + CFG.BOOST_DURATION;
+        }
+
+        // Generate new gates ahead
+        let gates = s.gates.filter(g => g.z > distance - CFG.CLEANUP_BEHIND);
+        let nextGateZ = s.nextGateZ;
+        let gateCount = s.gateCount;
+        while (nextGateZ < distance + CFG.RENDER_DIST) {
+          gates.push(makeGate(nextGateZ, gateCount));
+          gateCount++;
+          nextGateZ += CFG.GATE_SPACING_MIN + Math.random() * (CFG.GATE_SPACING_MAX - CFG.GATE_SPACING_MIN);
+        }
+
+        // Generate new orbs
+        let filteredOrbs = orbs.filter(o => !o.collected && o.z > distance - CFG.CLEANUP_BEHIND);
+        let nextOrbZ = s.nextOrbZ;
+        while (nextOrbZ < distance + CFG.RENDER_DIST) {
+          filteredOrbs.push(makeOrb(nextOrbZ));
+          nextOrbZ += CFG.ORB_SPACING + Math.random() * 5;
+        }
+
+        setGs({
+          px, py, distance, speed,
+          gates, orbs: filteredOrbs,
+          status: gameOver ? 'GAME_OVER' : 'PLAYING',
+          score, startTime: s.startTime,
+          nextGateZ, nextOrbZ, gateCount,
+          boostUntil,
+        });
+      }
+
+      loopId = requestAnimationFrame(loop);
+    };
+
+    loopId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(loopId);
+  }, [paused, inputRef, getInitialState]);
+
+  return gs;
+}
+
+// ==========================================
+// 5. R3F Components
+// ==========================================
+
+// Tunnel ring — rectangular wireframe
+function TunnelRing({ z }: { z: number }) {
+  const hw = CFG.TUNNEL_HW;
+  const hh = CFG.TUNNEL_HH;
+  const points = useMemo<[number, number, number][]>(() => [
+    [-hw, -hh, 0], [hw, -hh, 0], [hw, hh, 0], [-hw, hh, 0], [-hw, -hh, 0],
+  ], [hw, hh]);
+
+  return (
+    <group position={[0, 0, z]}>
+      <Line points={points} color="#0a4466" lineWidth={1} />
+    </group>
+  );
+}
+
+// Gate obstacle — 4 sections around the gap
+function GateMesh({ gate, relZ }: { gate: Gate; relZ: number }) {
+  const hw = CFG.TUNNEL_HW;
+  const hh = CFG.TUNNEL_HH;
+  const { gapX, gapY, gapW, gapH, color } = gate;
+  const t = CFG.GATE_THICKNESS;
+  const gl = gapX - gapW / 2;
+  const gr = gapX + gapW / 2;
+  const gb = gapY - gapH / 2;
+  const gt = gapY + gapH / 2;
+
+  // Build wall sections around the gap
+  const sections: { cx: number; cy: number; w: number; h: number }[] = [];
+
+  // Left wall
+  if (gl > -hw + 0.1) sections.push({ cx: (-hw + gl) / 2, cy: 0, w: gl + hw, h: hh * 2 });
+  // Right wall
+  if (gr < hw - 0.1) sections.push({ cx: (gr + hw) / 2, cy: 0, w: hw - gr, h: hh * 2 });
+  // Top (between left/right gap edges)
+  if (gt < hh - 0.1) {
+    const sx = Math.max(gl, -hw);
+    const ex = Math.min(gr, hw);
+    if (ex > sx) sections.push({ cx: (sx + ex) / 2, cy: (gt + hh) / 2, w: ex - sx, h: hh - gt });
+  }
+  // Bottom
+  if (gb > -hh + 0.1) {
+    const sx = Math.max(gl, -hw);
+    const ex = Math.min(gr, hw);
+    if (ex > sx) sections.push({ cx: (sx + ex) / 2, cy: (-hh + gb) / 2, w: ex - sx, h: gb + hh });
+  }
+
+  // Gap edge lines (bright outline of the opening)
+  const edgePoints = useMemo<[number, number, number][]>(() => [
+    [gl, gb, 0], [gr, gb, 0], [gr, gt, 0], [gl, gt, 0], [gl, gb, 0],
+  ], [gl, gr, gb, gt]);
+
+  return (
+    <group position={[0, 0, relZ]}>
+      {sections.map((s, i) => (
+        <mesh key={i} position={[s.cx, s.cy, 0]}>
+          <boxGeometry args={[s.w, s.h, t]} />
+          <meshBasicMaterial color={color} transparent opacity={0.35} />
+        </mesh>
+      ))}
+      {/* Bright gap outline */}
+      <Line points={edgePoints} color="#00ff88" lineWidth={2} />
+    </group>
+  );
+}
+
+// Collectible orb
+function OrbMesh({ orb, relZ, time }: { orb: Orb; relZ: number; time: number }) {
+  const pulse = 1 + Math.sin(time * 4 + orb.id) * 0.2;
+  return (
+    <mesh position={[orb.x, orb.y, relZ]} scale={pulse}>
+      <octahedronGeometry args={[CFG.ORB_R, 0]} />
+      <meshBasicMaterial color="#ffcc00" wireframe />
+    </mesh>
+  );
+}
+
+// Player ship (simple arrow/wedge)
+function PlayerMesh({ x, y, boosting }: { x: number; y: number; boosting: boolean }) {
+  const shape = useMemo(() => {
+    const s = new THREE.Shape();
+    s.moveTo(0, 0.4);
+    s.lineTo(0.3, -0.3);
+    s.lineTo(0, -0.15);
+    s.lineTo(-0.3, -0.3);
+    s.closePath();
+    return s;
+  }, []);
+
+  return (
+    <group position={[x, y, CFG.PLAYER_Z]}>
+      {/* Glow ring */}
+      <mesh>
+        <ringGeometry args={[0.5, 0.55, 32]} />
+        <meshBasicMaterial color={boosting ? '#ff6600' : '#00ccff'} transparent opacity={0.3} />
+      </mesh>
+      {/* Ship body */}
+      <mesh rotation={[0, 0, 0]}>
+        <shapeGeometry args={[shape]} />
+        <meshBasicMaterial color={boosting ? '#ffaa00' : '#00eeff'} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+}
+
+// Floor grid for speed perception
+function FloorGrid({ distance }: { distance: number }) {
+  const lines = useMemo(() => {
+    const geos: { z: number }[] = [];
+    for (let i = 0; i < 15; i++) {
+      geos.push({ z: -i * 10 });
+    }
+    return geos;
+  }, []);
+
+  const offset = -(distance % 10);
+
+  return (
+    <group position={[0, -CFG.TUNNEL_HH, offset]}>
+      {lines.map((l, i) => (
+        <mesh key={i} position={[0, 0, l.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[CFG.TUNNEL_HW * 2, 0.06]} />
+          <meshBasicMaterial color="#0a3344" transparent opacity={0.4} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ==========================================
+// 6. Scene (inner Canvas content)
+// ==========================================
+function Scene({ gs, inputRef }: { gs: GameState; inputRef: MutableRefObject<NormalizedInput> }) {
+  const { distance, gates, orbs, px, py, status, boostUntil } = gs;
+  const nowMs = Date.now();
+  const time = nowMs / 1000;
+  const isBoosting = nowMs < boostUntil;
+
+  // Generate ring Z positions
+  const ringStart = Math.floor(distance / CFG.RING_SPACING) * CFG.RING_SPACING;
+  const rings: number[] = [];
+  for (let z = ringStart; z < distance + CFG.RENDER_DIST; z += CFG.RING_SPACING) {
+    rings.push(z);
+  }
+
+  return (
+    <>
+      <fog attach="fog" args={['#050510', 40, CFG.RENDER_DIST - 20]} />
+      <color attach="background" args={['#050510']} />
+
+      {/* Floor grid */}
+      <FloorGrid distance={distance} />
+
+      {/* Tunnel rings */}
+      {rings.map(rz => {
+        const relZ = -(rz - distance);
+        return <TunnelRing key={`r${rz}`} z={relZ} />;
+      })}
+
+      {/* Gates */}
+      {gates.map(g => {
+        const relZ = -(g.z - distance);
+        if (relZ < -CFG.RENDER_DIST || relZ > CFG.CLEANUP_BEHIND) return null;
+        return <GateMesh key={g.id} gate={g} relZ={relZ} />;
+      })}
+
+      {/* Orbs */}
+      {orbs.map(o => {
+        if (o.collected) return null;
+        const relZ = -(o.z - distance);
+        if (relZ < -CFG.RENDER_DIST || relZ > CFG.CLEANUP_BEHIND) return null;
+        return <OrbMesh key={o.id} orb={o} relZ={relZ} time={time} />;
+      })}
+
+      {/* Player */}
+      {status !== 'READY' && (
+        <PlayerMesh x={px} y={py} boosting={isBoosting} />
+      )}
+    </>
+  );
+}
+
+// ==========================================
+// 7. Main Component
+// ==========================================
 interface Props {
   inputRef: MutableRefObject<NormalizedInput>;
-  socket: Socket;
-  roomId: string;
-  onExit?: () => void;
-  paused?: boolean;
-  onPause?: () => void;
-  onResume?: () => void;
-  onScoreChange?: (score: number) => void;
-  onStatusChange?: (status: any) => void;
-  settings?: any;
+  paused: boolean;
+  callbacks: GameCallbacks;
   [key: string]: any;
 }
 
-export default function Game4({ inputRef, socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
-  const { gameState, setBoost, startGame, resetGame } = useGameLogic(inputRef, paused);
-  const { snake, food, particles, status, score, dir, boosting } = gameState;
-
-  useEffect(() => { if (onScoreChange) onScoreChange(score); }, [score, onScoreChange]);
-  useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
-
-  useEffect(() => {
-    const handleAction = (payload: any) => {
-      const action = typeof payload === 'string' ? payload : payload.action;
-      if (action === 'boost-start') { setBoost(true); sfx.snakeBoost(); }
-      if (action === 'boost-end') setBoost(false);
-      if (action === 'start-game') startGame();
-      if (action === 'restart-game') resetGame();
-      if (action === 'pause') onPause?.();
-      if (action === 'resume') onResume?.();
-    };
-    socket.on('controller-action', handleAction);
-    socket.emit('sync-game-status', { roomId, status });
-    return () => {
-      socket.off('controller-action');
-    };
-  }, [socket, setBoost, startGame, resetGame, status, onPause, onResume, roomId]);
-
-  const dirArrow = { UP: '↑', DOWN: '↓', LEFT: '←', RIGHT: '→' }[dir];
+export default function Game4({ inputRef, paused, callbacks }: Props) {
+  const gs = useGameLogic(inputRef, paused, callbacks);
+  const { status, score, speed, distance, boostUntil } = gs;
+  const isBoosting = Date.now() < boostUntil;
 
   return (
-    <div className="relative w-full h-screen overflow-hidden flex items-center justify-center font-mono select-none"
-      style={{ background: 'linear-gradient(135deg, #0a0a1a 0%, #0d1b2a 50%, #0a1628 100%)' }}>
+    <div className="relative w-full h-screen overflow-hidden select-none" style={{ background: '#050510' }}>
+      {/* R3F Canvas */}
+      <Canvas
+        camera={{ position: [0, 0, 5], fov: 75, near: 0.1, far: 200 }}
+        gl={{ antialias: false, alpha: false }}
+        style={{ position: 'absolute', inset: 0 }}
+      >
+        <Scene gs={gs} inputRef={inputRef} />
+      </Canvas>
 
-      {/* Direction indicator */}
+      {/* HUD: Score */}
       {status === 'PLAYING' && (
-        <div className={`absolute top-4 left-1/2 -translate-x-1/2 z-20 text-2xl font-black px-4 py-1 rounded-full border transition-all ${boosting ? 'text-yellow-300 border-yellow-500/50 bg-yellow-900/30 scale-125' : 'text-green-400 border-green-500/30 bg-green-900/20'}`}>
-          {dirArrow} {boosting && '⚡BOOST'}
+        <>
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 text-2xl font-black tracking-[0.3em] text-white/80 font-mono"
+            style={{ textShadow: '0 0 20px rgba(0,204,255,0.5)' }}>
+            {score.toString().padStart(7, '0')}
+          </div>
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-10 text-xs font-bold text-cyan-400/60 font-mono">
+            {Math.floor(speed * 1000)} km/h
+          </div>
+          {isBoosting && (
+            <div className="absolute top-4 right-4 z-10 text-xs font-bold text-orange-400 bg-orange-900/30 px-3 py-1 rounded-full border border-orange-500/30 animate-pulse">
+              BOOST
+            </div>
+          )}
+        </>
+      )}
+
+      {/* READY overlay */}
+      {status === 'READY' && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4">
+          <div className="text-5xl font-black tracking-wider"
+            style={{
+              color: '#00eeff',
+              textShadow: '0 0 30px rgba(0,238,255,0.6), 0 0 60px rgba(0,238,255,0.3)',
+            }}>
+            TUNNEL RUNNER
+          </div>
+          <div className="text-white/30 text-sm tracking-widest animate-pulse font-mono">
+            TILT TO DODGE · FLY THROUGH THE GATES
+          </div>
+          <div className="flex gap-6 mt-4">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded-sm" style={{ background: 'rgba(255,0,85,0.5)', border: '1px solid #ff0055' }} />
+              <span className="text-white/40 text-xs">WALL</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded-sm border border-green-400" style={{ background: 'transparent' }} />
+              <span className="text-white/40 text-xs">GAP</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rotate-45" style={{ background: '#ffcc00' }} />
+              <span className="text-white/40 text-xs">ORB</span>
+            </div>
+          </div>
         </div>
       )}
 
-      <div className="relative"
-        style={{
-          width: GAME_CONFIG.WIDTH,
-          height: GAME_CONFIG.HEIGHT,
-          background: 'rgba(0,20,10,0.8)',
-          border: '2px solid rgba(74,222,128,0.3)',
-          boxShadow: '0 0 40px rgba(74,222,128,0.1), inset 0 0 40px rgba(0,0,0,0.5)'
-        }}>
-
-        {/* Grid lines */}
-        <div className="absolute inset-0 opacity-10"
-          style={{
-            backgroundImage: `linear-gradient(rgba(74,222,128,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(74,222,128,0.5) 1px, transparent 1px)`,
-            backgroundSize: `${GAME_CONFIG.CELL}px ${GAME_CONFIG.CELL}px`
-          }} />
-
-        {/* Food */}
-        <div className={`absolute rounded-full flex items-center justify-center font-bold transition-transform`}
-          style={{
-            left: food.x * GAME_CONFIG.CELL + 2,
-            top: food.y * GAME_CONFIG.CELL + 2,
-            width: GAME_CONFIG.CELL - 4,
-            height: GAME_CONFIG.CELL - 4,
-            background: food.special
-              ? 'radial-gradient(circle, #fde047, #f59e0b)'
-              : 'radial-gradient(circle, #86efac, #22c55e)',
-            boxShadow: food.special
-              ? '0 0 20px rgba(245,158,11,0.9)'
-              : '0 0 15px rgba(74,222,128,0.8)',
-            animation: 'pulse 1s infinite',
-            fontSize: 14
-          }}>
-          {food.special ? '★' : '●'}
+      {/* GAME OVER overlay */}
+      {status === 'GAME_OVER' && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
+          <div className="text-4xl font-black text-red-500 tracking-wider"
+            style={{ textShadow: '0 0 30px rgba(239,68,68,0.5)' }}>
+            CRASH
+          </div>
+          <div className="text-xs text-white/40 font-mono">DISTANCE: {Math.floor(distance)}m</div>
+          <div className="text-2xl font-bold text-white/80 tracking-widest font-mono">
+            {score.toString().padStart(7, '0')}
+          </div>
+          <div className="text-white/30 text-xs tracking-widest mt-2 animate-pulse">
+            TAP RESTART ON CONTROLLER
+          </div>
         </div>
-
-        {/* Snake */}
-        {snake.map((seg, i) => {
-          const isHead = i === 0;
-          const progress = i / snake.length;
-          const hue = 120 + progress * 40; // green gradient from head to tail
-          const lightness = isHead ? 70 : 45 - progress * 15;
-          return (
-            <div key={`${seg.x}-${seg.y}-${i}`}
-              className={`absolute ${isHead ? 'rounded-md' : 'rounded-sm'}`}
-              style={{
-                left: seg.x * GAME_CONFIG.CELL + 1,
-                top: seg.y * GAME_CONFIG.CELL + 1,
-                width: GAME_CONFIG.CELL - 2,
-                height: GAME_CONFIG.CELL - 2,
-                backgroundColor: `hsl(${hue}, 80%, ${lightness}%)`,
-                boxShadow: isHead ? `0 0 12px hsl(${hue}, 80%, 60%)` : undefined,
-                transition: 'all 0.05s linear'
-              }}>
-              {isHead && (
-                <>
-                  <div className="absolute w-2 h-2 rounded-full bg-white/80"
-                    style={{ top: dir === 'UP' || dir === 'DOWN' ? 4 : '30%', left: dir === 'LEFT' || dir === 'RIGHT' ? 4 : '20%' }} />
-                  <div className="absolute w-2 h-2 rounded-full bg-white/80"
-                    style={{ top: dir === 'UP' || dir === 'DOWN' ? 4 : '30%', right: dir === 'LEFT' || dir === 'RIGHT' ? 4 : '20%' }} />
-                </>
-              )}
-            </div>
-          );
-        })}
-
-        {/* Particles */}
-        {particles.map(p => (
-          <div key={p.id} className="absolute rounded-full pointer-events-none"
-            style={{
-              width: 6, height: 6,
-              left: p.x - 3, top: p.y - 3,
-              backgroundColor: p.color,
-              opacity: p.life,
-              boxShadow: `0 0 4px ${p.color}`
-            }} />
-        ))}
-      </div>
-
-      <style>{`@keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }`}</style>
+      )}
     </div>
   );
 }

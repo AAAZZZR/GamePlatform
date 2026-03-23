@@ -20,41 +20,66 @@ const CARD_COLORS = [
   { from: '#22d3ee', to: '#06b6d4' }, // cyan
 ];
 
+const SCROLL_THRESHOLD = 12; // px — finger must move less than this to count as tap
+
 export default function MobileLobby({ onSelectGame }: Props) {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didLongPress = useRef(false);
+  const didScroll = useRef(false);
+  const touchStartPos = useRef({ x: 0, y: 0 });
 
-  const handleTouchStart = useCallback((id: string) => {
-    didLongPress.current = false;
-    longPressTimer.current = setTimeout(() => {
-      didLongPress.current = true;
-      setPreviewId(id);
-      if (navigator.vibrate) navigator.vibrate(20);
-    }, 400);
-  }, []);
-
-  const handleTouchEnd = useCallback((id: string) => {
+  const clearTimer = useCallback(() => {
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
+    }
+  }, []);
+
+  const handleTouchStart = useCallback((id: string, e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    touchStartPos.current = { x: touch.clientX, y: touch.clientY };
+    didLongPress.current = false;
+    didScroll.current = false;
+
+    longPressTimer.current = setTimeout(() => {
+      if (!didScroll.current) {
+        didLongPress.current = true;
+        setPreviewId(id);
+        if (navigator.vibrate) navigator.vibrate(20);
+      }
+    }, 400);
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    const dx = touch.clientX - touchStartPos.current.x;
+    const dy = touch.clientY - touchStartPos.current.y;
+    if (Math.abs(dx) > SCROLL_THRESHOLD || Math.abs(dy) > SCROLL_THRESHOLD) {
+      didScroll.current = true;
+      clearTimer();
+    }
+  }, [clearTimer]);
+
+  const handleTouchEnd = useCallback((id: string) => {
+    clearTimer();
+    if (didScroll.current) {
+      // Was scrolling — do nothing
+      return;
     }
     if (didLongPress.current) {
       // Was a long press — dismiss preview after a moment
       setTimeout(() => setPreviewId(null), 1500);
     } else {
-      // Short tap — select game
+      // Short tap without scroll — select game
       onSelectGame(id);
     }
-  }, [onSelectGame]);
+  }, [onSelectGame, clearTimer]);
 
   const handleTouchCancel = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
+    clearTimer();
     setPreviewId(null);
-  }, []);
+  }, [clearTimer]);
 
   const games = Object.entries(GAME_REGISTRY);
 
@@ -76,13 +101,15 @@ export default function MobileLobby({ onSelectGame }: Props) {
           const isPreview = previewId === id;
 
           return (
-            <button
+            <div
               key={id}
-              onTouchStart={(e) => { e.stopPropagation(); handleTouchStart(id); }}
-              onTouchEnd={(e) => { e.stopPropagation(); handleTouchEnd(id); }}
+              role="button"
+              tabIndex={0}
+              onTouchStart={(e) => handleTouchStart(id, e)}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={() => handleTouchEnd(id)}
               onTouchCancel={handleTouchCancel}
-              onClick={() => onSelectGame(id)}
-              className="group relative aspect-square rounded-2xl overflow-hidden border border-white/10 active:scale-95 transition-all duration-200 select-none touch-manipulation"
+              className="group relative aspect-square rounded-2xl overflow-hidden border border-white/10 transition-all duration-200 select-none touch-manipulation cursor-pointer"
               style={{
                 background: `linear-gradient(135deg, ${color.from}15, ${color.to}08)`,
               }}
@@ -109,12 +136,14 @@ export default function MobileLobby({ onSelectGame }: Props) {
               </div>
 
               {/* Description overlay — visible on long-press (mobile) or hover (desktop) */}
-              <div className={`
-                absolute inset-0 z-20 flex items-center justify-center p-4 rounded-2xl
-                transition-all duration-300
-                ${isPreview ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
-              `}
+              <div
+                className={`
+                  absolute inset-0 z-20 flex items-center justify-center p-4 rounded-2xl
+                  transition-all duration-300
+                  ${isPreview ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
+                `}
                 style={{ background: `linear-gradient(135deg, ${color.from}e6, ${color.to}cc)` }}
+                onClick={(e) => { e.stopPropagation(); onSelectGame(id); }}
               >
                 <div className="text-center">
                   <span className="text-2xl block mb-2">{game.icon}</span>
@@ -122,7 +151,7 @@ export default function MobileLobby({ onSelectGame }: Props) {
                   <span className="text-white/80 text-xs leading-relaxed block">{game.description}</span>
                 </div>
               </div>
-            </button>
+            </div>
           );
         })}
       </div>

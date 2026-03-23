@@ -15,9 +15,9 @@ const CFG = {
   CHAR_H: 30,
   PLAT_W: 65,
   PLAT_H: 12,
-  GRAVITY: 0.4,        // subtracted from vy each frame
-  JUMP_VY: 12,         // upward velocity on normal bounce
-  SPRING_VY: 20,       // upward velocity on spring bounce
+  GRAVITY: 0.25,       // subtracted from vy each frame (lower = floatier)
+  JUMP_VY: 9,          // upward velocity on normal bounce
+  SPRING_VY: 15,       // upward velocity on spring bounce
   MOVE_SPEED: 1,
   BULLET_SIZE: 5,
   BULLET_SPEED: 10,
@@ -684,8 +684,8 @@ export default function Game7({ inputRef, paused, callbacks }: Props) {
         );
       })}
 
-      {/* Character (Doodler) */}
-      {status !== 'READY' && (
+      {/* Character (Doodler) — always visible so READY screen matches gameplay */}
+      {status !== 'GAME_OVER' && (
         <div
           className="absolute"
           style={{
@@ -747,22 +747,14 @@ export default function Game7({ inputRef, paused, callbacks }: Props) {
         </div>
       )}
 
-      {/* READY overlay */}
+      {/* READY overlay — semi-transparent so game world shows through */}
       {status === 'READY' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-30">
-          <div style={{ fontSize: 48, fontWeight: 900, color: '#5cb85c', textShadow: '2px 2px 0 #4a9a4a', marginBottom: 8 }}>
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-30"
+          style={{ backgroundColor: 'rgba(250,248,239,0.7)' }}>
+          <div style={{ fontSize: 42, fontWeight: 900, color: '#5cb85c', textShadow: '2px 2px 0 #4a9a4a', marginBottom: 16 }}>
             Doodle Jump
           </div>
-          {/* Doodler preview */}
-          <div style={{ width: 50, height: 50, backgroundColor: '#5cb85c', borderRadius: 12, border: '3px solid #4a9a4a', position: 'relative', margin: '12px 0 20px' }}>
-            <div className="absolute" style={{ width: 10, height: 11, backgroundColor: 'white', borderRadius: '50%', top: 8, left: 8, border: '1px solid #333' }}>
-              <div className="absolute" style={{ width: 5, height: 5, backgroundColor: '#1a1a2e', borderRadius: '50%', bottom: 1, right: 0 }} />
-            </div>
-            <div className="absolute" style={{ width: 10, height: 11, backgroundColor: 'white', borderRadius: '50%', top: 8, right: 8, border: '1px solid #333' }}>
-              <div className="absolute" style={{ width: 5, height: 5, backgroundColor: '#1a1a2e', borderRadius: '50%', bottom: 1, right: 0 }} />
-            </div>
-          </div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: '#8a8570', animation: 'doodlePulse 1.5s ease-in-out infinite' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: '#8a8570', animation: 'doodlePulse 1.5s ease-in-out infinite' }}>
             TILT TO PLAY
           </div>
         </div>

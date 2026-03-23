@@ -21,8 +21,10 @@ function ControllerContent() {
   const {
     permissionGranted,
     debug,
+    gyroMode,
     requestPermission,
-    handleCalibrate
+    handleCalibrate,
+    switchGyroMode,
   } = useGyroController(socket, room, sendGyro);
 
   // --- 狀態同步 ---
@@ -104,10 +106,26 @@ function ControllerContent() {
         ) : (
           <>
             {/* 上方狀態列 */}
-            <div className="flex items-center justify-center w-full px-4 gap-3 relative shrink-0">
+            <div className="flex items-center justify-center w-full px-4 gap-2 relative shrink-0">
               <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                 <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
-                {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+                {isConnected ? 'ON' : 'OFF'}
+              </div>
+
+              {/* Gyro mode toggle */}
+              <div className="flex bg-black/30 rounded-full border border-white/10 overflow-hidden">
+                <button
+                  onClick={() => switchGyroMode('natural')}
+                  className={`px-2.5 py-1 text-[10px] font-bold transition-colors ${gyroMode === 'natural' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
+                >
+                  🤲 Natural
+                </button>
+                <button
+                  onClick={() => switchGyroMode('flat')}
+                  className={`px-2.5 py-1 text-[10px] font-bold transition-colors ${gyroMode === 'flat' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
+                >
+                  📱 Flat
+                </button>
               </div>
 
               <div className="bg-black/30 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 font-mono text-[9px] text-cyan-300">

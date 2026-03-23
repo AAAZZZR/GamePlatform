@@ -15,8 +15,8 @@ interface LobbyProps {
 const CATEGORIES: Record<string, string[]> = {
   'Action':  ['game1', 'game5'],
   'Arcade':  ['game2', 'game7'],
-  'Racing':  ['game3'],
-  'Classic': ['game4', 'game6'],
+  'Racing':  ['game3', 'game4'],
+  'Classic': ['game6'],
   'Flight':  ['game8'],
 };
 

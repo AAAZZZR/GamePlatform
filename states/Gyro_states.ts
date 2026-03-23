@@ -11,6 +11,8 @@ const EMIT_INTERVAL = 50;
  * sendGyro: either a P2P DataChannel sender or the socket emit.
  * Provided by useMobileSocket's `sendGyro` helper.
  */
+export type GyroMode = 'natural' | 'flat';
+
 export function useGyroController(
   socket: Socket | null,
   roomId: string | null,
@@ -18,7 +20,9 @@ export function useGyroController(
 ) {
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [debug, setDebug] = useState<string>('Init...');
+  const [gyroMode, setGyroMode] = useState<GyroMode>('natural');
 
+  // Natural: phone held at ~24° from flat; Flat: phone lying on table
   const offsetRef = useRef({ beta: 0, gamma: -24 });
   const lastRawData = useRef({ beta: 0, gamma: 0 });
   const lastEmitTime = useRef(0);
@@ -34,6 +38,20 @@ export function useGyroController(
     if (navigator.vibrate) navigator.vibrate(50);
     alert('Center Reset');
   }, [socket, roomId]);
+
+  const switchGyroMode = useCallback((mode: GyroMode) => {
+    setGyroMode(mode);
+    if (mode === 'flat') {
+      offsetRef.current = { beta: 0, gamma: 0 };
+    } else {
+      // Natural: recalibrate to current hand position
+      offsetRef.current = {
+        beta: lastRawData.current.beta,
+        gamma: lastRawData.current.gamma
+      };
+    }
+    if (navigator.vibrate) navigator.vibrate(30);
+  }, []);
 
   const requestPermission = useCallback(async () => {
     if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
@@ -94,7 +112,9 @@ export function useGyroController(
   return {
     permissionGranted,
     debug,
+    gyroMode,
     requestPermission,
-    handleCalibrate
+    handleCalibrate,
+    switchGyroMode,
   };
 }

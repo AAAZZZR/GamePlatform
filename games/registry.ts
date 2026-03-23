@@ -43,9 +43,9 @@ export const GAME_REGISTRY: Record<string, GameEntry> = {
     mobile: Game3_Mobile,
   },
   'game4': {
-    name: 'Snake',
-    description: 'Tilt your phone to steer the snake. Eat food to grow. Boost for speed!',
-    icon: '🐍',
+    name: 'Tunnel Runner',
+    description: 'Fly through a neon tunnel in 3D. Tilt to dodge gates. Boost for speed!',
+    icon: '🌀',
     desktop: Game4,
     mobile: Game4_Mobile,
   },
