@@ -21,6 +21,10 @@ export interface GameSettings {
 // [新增] 遊戲狀態枚舉
 export type GameStatus = 'IDLE' | 'READY' | 'PLAYING' | 'PAUSED' | 'GAME_OVER';
 
+// Multiplayer types
+export type GameMode = 'solo' | 'multi';
+export type PlayerNumber = 1 | 2;
+
 export type GameId = 'LOBBY' | 'game1' | 'game2' | 'game3' | 'game4' | 'game5';
 
 // 2. 擴充 Socket 事件

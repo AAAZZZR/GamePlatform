@@ -1,6 +1,7 @@
 // platform/types.ts — 遊戲平台合約
-import { MutableRefObject } from 'react';
+import React, { MutableRefObject } from 'react';
 import { GameStatus } from '@/types/game';
+import type { PlayerNumber } from '@/types/game';
 
 // ─── 統一輸入格式 ───────────────────────────────────────────────────
 export interface NormalizedInput {
@@ -31,6 +32,13 @@ export interface MobileControllerProps {
   sendAction: (action: string) => void;
 }
 
+// ─── 多人遊戲 Props（future use） ────────────────────────────────────
+export interface MultiplayerGameProps {
+  inputRefs: Map<PlayerNumber, React.MutableRefObject<NormalizedInput>>;
+  paused: boolean;
+  callbacks: GameCallbacks;
+}
+
 // ─── 遊戲註冊表條目 ────────────────────────────────────────────────
 export interface GameEntry {
   name: string;
@@ -40,4 +48,6 @@ export interface GameEntry {
   desktop: React.ComponentType<any>;
   // 接受 MobileControllerProps + 向下相容舊 Props
   mobile: React.ComponentType<any>;
+  /** 是否支援多人模式 (default: false/undefined = solo only) */
+  multiplayer?: boolean;
 }

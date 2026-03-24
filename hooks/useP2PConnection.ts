@@ -56,10 +56,19 @@ export function useP2PConnection(socket: Socket | null, roomId: string) {
             if (!socket) return;
             // Route by message type: action / reset-position / gyro (default)
             if (data._p2p === 'action') {
-              injectSocketEvent(socket, 'controller-action', data.action);
+              // In multi mode, mobile sends { _p2p, action, playerNumber }
+              // Preserve playerNumber if present for multi mode
+              if (data.playerNumber !== undefined) {
+                injectSocketEvent(socket, 'controller-action', { action: data.action, playerNumber: data.playerNumber });
+              } else {
+                // Solo mode: emit just the action string (backward compatible)
+                injectSocketEvent(socket, 'controller-action', data.action);
+              }
             } else if (data._p2p === 'reset-position') {
               injectSocketEvent(socket, 'reset-game-position');
             } else {
+              // Gyro data — in multi mode includes playerNumber, in solo it doesn't
+              // Pass through as-is; the game components handle both shapes
               injectSocketEvent(socket, 'update-game-state', data);
             }
           } catch { /* ignore */ }
@@ -67,14 +76,22 @@ export function useP2PConnection(socket: Socket | null, roomId: string) {
       };
 
       // ── Signal: receive answer from mobile ────────────────────────────
-      socket.on('webrtc-answer', async (sdp: RTCSessionDescriptionInit) => {
+      socket.on('webrtc-answer', async (incoming: RTCSessionDescriptionInit | { sdp: RTCSessionDescriptionInit; fromSocketId?: string }) => {
+        // Backward compat: accept raw sdp or wrapped { sdp, fromSocketId }
+        const sdp = 'fromSocketId' in incoming
+          ? (incoming as { sdp: RTCSessionDescriptionInit }).sdp
+          : incoming as RTCSessionDescriptionInit;
         if (pc && pc.signalingState !== 'closed') {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         }
       });
 
       // ── Signal: receive ICE candidates from mobile ────────────────────
-      socket.on('webrtc-ice-candidate', async (candidate: RTCIceCandidateInit) => {
+      socket.on('webrtc-ice-candidate', async (incoming: RTCIceCandidateInit | { candidate: RTCIceCandidateInit; fromSocketId?: string }) => {
+        // Backward compat: accept raw candidate or wrapped { candidate, fromSocketId }
+        const candidate = 'fromSocketId' in incoming
+          ? (incoming as { candidate: RTCIceCandidateInit }).candidate
+          : incoming as RTCIceCandidateInit;
         if (pc && pc.remoteDescription) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         }

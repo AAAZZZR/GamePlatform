@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useSocketConnection } from '@/hooks/useSocketConnection';
 import Lobby from '@/components/Lobby';
 import GameShell from '@/platform/GameShell';
-import { GameId } from '@/types/game';
+import { GameId, GameMode, PlayerNumber } from '@/types/game';
 import { initAudio, startBgm, stopBgm } from '@/platform/audio';
 
 export default function Home() {
@@ -12,6 +12,10 @@ export default function Home() {
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
   const [audioReady, setAudioReady] = useState(false);
   const [desktopTilt, setDesktopTilt] = useState({ x: 0, y: 0 });
+
+  // Multiplayer state
+  const [mode, setMode] = useState<GameMode | null>(null);
+  const [connectedPlayers, setConnectedPlayers] = useState<Map<string, PlayerNumber>>(new Map());
 
   // 首次互動解鎖 AudioContext（瀏覽器政策需要 user gesture）
   useEffect(() => {
@@ -50,11 +54,25 @@ export default function Home() {
       });
     };
     socket.on('update-game-state', handleGyro);
+
+    // Listen for connected-players updates (from multiplayer hook, when available)
+    const handlePlayersUpdate = (players: Record<string, PlayerNumber>) => {
+      setConnectedPlayers(new Map(Object.entries(players)));
+    };
+    socket.on('players-updated', handlePlayersUpdate);
+
     return () => {
       socket.off('game-changed');
       socket.off('update-game-state', handleGyro);
+      socket.off('players-updated', handlePlayersUpdate);
     };
   }, [socket]);
+
+  // When mode changes, notify the server (if the hook supports it)
+  useEffect(() => {
+    if (!socket || !roomId || mode === null) return;
+    socket.emit('set-mode', { roomId, mode });
+  }, [socket, roomId, mode]);
 
   if (!socket) {
     return <div className="h-screen bg-black text-white flex items-center justify-center">Initializing System...</div>;
@@ -83,6 +101,9 @@ export default function Home() {
       onSelectGame={(gameId) => {
         socket.emit('select-game', { roomId, gameId });
       }}
+      mode={mode}
+      onModeSelect={setMode}
+      connectedPlayers={connectedPlayers}
     />
   );
 }

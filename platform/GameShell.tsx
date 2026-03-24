@@ -6,7 +6,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { GAME_REGISTRY } from '@/games/registry';
 import { GameSettings } from '@/types/game';
-import { useNormalizedInput } from './useNormalizedInput';
+import type { GameMode } from '@/types/game';
+import { useNormalizedInput, useMultiplayerInput } from './useNormalizedInput';
 import type { GameStatus } from './types';
 import GameSettingsPanel from '@/components/GameSettings';
 import GameOverlay from '@/components/GameOverlay';
@@ -16,10 +17,11 @@ interface GameShellProps {
   gameId: string;
   socket: Socket;
   roomId: string;
+  mode?: GameMode;  // 'solo' | 'multi', default 'solo'
   onExit: () => void;
 }
 
-export default function GameShell({ gameId, socket, roomId, onExit }: GameShellProps) {
+export default function GameShell({ gameId, socket, roomId, mode = 'solo', onExit }: GameShellProps) {
   const [gameStatus, setGameStatus] = useState<GameStatus>('READY');
   const [score, setScore] = useState(0);
   const [settings, setSettings] = useState<GameSettings>({ speed: 15, maxAngle: 30 });
@@ -36,7 +38,12 @@ export default function GameShell({ gameId, socket, roomId, onExit }: GameShellP
   }, [gameStatus]);
 
   // 統一輸入（gyro + 按鈕 → NormalizedInput ref）
+  // Solo mode: single inputRef; Multi mode: Map of player refs
   const inputRef = useNormalizedInput(socket, settings);
+  const multiInputRefs = useMultiplayerInput(
+    mode === 'multi' ? socket : null,
+    settings
+  );
 
   // 同步遊戲狀態到手機端
   useEffect(() => {
@@ -75,7 +82,8 @@ export default function GameShell({ gameId, socket, roomId, onExit }: GameShellP
       <GameComponent
         key={`${gameId}-${restartKey}`}
         // ─── 新 Platform API ───
-        inputRef={inputRef}
+        inputRef={mode === 'solo' ? inputRef : multiInputRefs.get(1)}
+        {...(mode === 'multi' ? { inputRefs: multiInputRefs } : {})}
         callbacks={{
           onScoreChange: setScore,
           onStatusChange: setGameStatus,

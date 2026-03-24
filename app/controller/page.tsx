@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useMobileSocket } from '@/hooks/useMobileSocket';
 import { useGyroController } from '@/states/Gyro_states';
 import { GAME_REGISTRY } from '@/games/registry';
-import { GameId } from '@/types/game';
+import { GameId, GameMode, PlayerNumber } from '@/types/game';
 import MobileLobby from '@/components/MobileLobby';
 import MobileGameOverlay from '@/components/MobileGameOverlay';
 import TiltBall from '@/components/TiltBall';
@@ -27,7 +27,16 @@ function ControllerContent() {
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
   const [gameStatus, setGameStatus] = useState<string>('READY'); // [NEW] Track Global Status
 
-  const { socket, isConnected, sendGyro, sendAction } = useMobileSocket(room);
+  // Multiplayer state — will be populated by player-assigned event
+  const [playerNumber, setPlayerNumber] = useState<PlayerNumber>(1);
+  const [gameMode, setGameMode] = useState<GameMode>('solo');
+
+  const hookResult = useMobileSocket(room);
+  const { socket, isConnected, sendGyro, sendAction } = hookResult;
+
+  // Try to get playerNumber/mode from hook if available (future-compat)
+  const effectivePlayerNumber = (hookResult as any).playerNumber ?? playerNumber;
+  const effectiveMode = (hookResult as any).mode ?? gameMode;
 
   const {
     permissionGranted,
@@ -53,9 +62,16 @@ function ControllerContent() {
       setGameStatus(status);
     });
 
+    // Listen for multiplayer player assignment
+    socket.on('player-assigned', ({ playerNumber: pn, mode }: { playerNumber: PlayerNumber; mode: GameMode }) => {
+      setPlayerNumber(pn);
+      setGameMode(mode);
+    });
+
     return () => {
       socket.off('game-changed');
       socket.off('sync-game-status');
+      socket.off('player-assigned');
     };
   }, [socket]);
 
@@ -119,12 +135,36 @@ function ControllerContent() {
           <>
             {/* 上方：連線狀態 + 模式選擇（獨立行） */}
             <div className="flex flex-col items-center w-full shrink-0 gap-1 pt-1">
-              {/* Row 1: Connection + debug */}
+              {/* Row 1: Connection + debug + player badge */}
               <div className="flex items-center gap-2">
-                <div className={`flex items-center gap-1.5 px-3 py-0.5 rounded-full text-[10px] font-bold ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                  <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+                <div className={`flex items-center gap-1.5 px-3 py-0.5 rounded-full text-[10px] font-bold ${
+                  isConnected
+                    ? effectiveMode === 'multi' && effectivePlayerNumber === 2
+                      ? 'bg-violet-500/20 text-violet-400'
+                      : 'bg-green-500/20 text-green-400'
+                    : 'bg-red-500/20 text-red-400'
+                }`}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${
+                    isConnected
+                      ? effectiveMode === 'multi' && effectivePlayerNumber === 2
+                        ? 'bg-violet-400 animate-pulse'
+                        : 'bg-green-400 animate-pulse'
+                      : 'bg-red-400'
+                  }`} />
                   {isConnected ? 'CONNECTED' : 'OFF'}
                 </div>
+
+                {/* Player badge — only in multi mode */}
+                {effectiveMode === 'multi' && isConnected && (
+                  <div className={`px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wider ${
+                    effectivePlayerNumber === 1
+                      ? 'bg-cyan-500/20 text-cyan-300 shadow-[0_0_8px_rgba(34,211,238,0.3)]'
+                      : 'bg-violet-500/20 text-violet-300 shadow-[0_0_8px_rgba(139,92,246,0.3)]'
+                  }`}>
+                    P{effectivePlayerNumber}
+                  </div>
+                )}
+
                 {currentView !== 'LOBBY' && (
                   <button onClick={handleBackToLobby} className="text-[10px] text-gray-500 hover:text-white px-2 py-0.5 border border-white/10 rounded">
                     ← Back
@@ -138,14 +178,26 @@ function ControllerContent() {
                 <div className="flex flex-1 bg-black/40 rounded-xl border border-white/10 overflow-hidden">
                   <button
                     onClick={() => switchGyroMode('natural')}
-                    className={`flex-1 py-2 text-xs font-bold tracking-wide transition-colors ${gyroMode === 'natural' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
+                    className={`flex-1 py-2 text-xs font-bold tracking-wide transition-colors ${
+                      gyroMode === 'natural'
+                        ? effectiveMode === 'multi' && effectivePlayerNumber === 2
+                          ? 'bg-violet-500/30 text-violet-300'
+                          : 'bg-cyan-500/30 text-cyan-300'
+                        : 'text-gray-500'
+                    }`}
                   >
                     🤲 Natural Hold
                   </button>
                   <div className="w-px bg-white/10" />
                   <button
                     onClick={() => switchGyroMode('flat')}
-                    className={`flex-1 py-2 text-xs font-bold tracking-wide transition-colors ${gyroMode === 'flat' ? 'bg-cyan-500/30 text-cyan-300' : 'text-gray-500'}`}
+                    className={`flex-1 py-2 text-xs font-bold tracking-wide transition-colors ${
+                      gyroMode === 'flat'
+                        ? effectiveMode === 'multi' && effectivePlayerNumber === 2
+                          ? 'bg-violet-500/30 text-violet-300'
+                          : 'bg-cyan-500/30 text-cyan-300'
+                        : 'text-gray-500'
+                    }`}
                   >
                     📱 Flat Table
                   </button>
@@ -159,9 +211,13 @@ function ControllerContent() {
               {/* 狀態 A: 大廳 — 遊戲選單 + 光球 */}
               {currentView === 'LOBBY' && (
                 <div className="w-full h-full flex">
-                  {/* 左側遊戲列表 */}
+                  {/* 左側遊戲列表 (or waiting screen in multi mode) */}
                   <div className="flex-1 min-w-0">
-                    <MobileLobby onSelectGame={handleGameSelect} />
+                    <MobileLobby
+                      onSelectGame={handleGameSelect}
+                      mode={effectiveMode}
+                      playerNumber={effectivePlayerNumber}
+                    />
                   </div>
                   {/* 右側光球指示器 */}
                   <div className="shrink-0 flex items-center justify-center px-2">

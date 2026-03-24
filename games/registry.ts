@@ -96,3 +96,10 @@ export const GAME_REGISTRY: Record<string, GameEntry> = {
     mobile: Game10_Mobile,
   },
 };
+
+// ─── Multiplayer helpers ────────────────────────────────────────────
+export const getMultiplayerGames = () =>
+  Object.entries(GAME_REGISTRY).filter(([_, g]) => g.multiplayer);
+
+export const getSoloGames = () =>
+  Object.entries(GAME_REGISTRY).filter(([_, g]) => !g.multiplayer);

@@ -2,10 +2,13 @@
 'use client';
 import React, { useState, useRef, useCallback } from 'react';
 import { GAME_REGISTRY } from '@/games/registry';
+import { GameMode, PlayerNumber } from '@/types/game';
 import Logo from '@/components/Logo';
 
 interface Props {
   onSelectGame: (gameId: string) => void;
+  mode?: GameMode;
+  playerNumber?: PlayerNumber;
 }
 
 // Accent colors per game slot
@@ -22,7 +25,7 @@ const CARD_COLORS = [
 
 const SCROLL_THRESHOLD = 12; // px — finger must move less than this to count as tap
 
-export default function MobileLobby({ onSelectGame }: Props) {
+export default function MobileLobby({ onSelectGame, mode, playerNumber }: Props) {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didLongPress = useRef(false);
@@ -83,6 +86,69 @@ export default function MobileLobby({ onSelectGame }: Props) {
 
   const games = Object.entries(GAME_REGISTRY);
 
+  // ── Multi mode: waiting screen (games are selected from desktop) ──
+  if (mode === 'multi') {
+    const isP1 = playerNumber === 1;
+
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center gap-6 px-6">
+        {/* Player identity */}
+        <div className="flex flex-col items-center gap-3">
+          <div className={`text-6xl font-black tracking-widest ${
+            isP1 ? 'text-cyan-400' : 'text-violet-400'
+          }`}>
+            P{playerNumber ?? '?'}
+          </div>
+          <div className={`text-lg font-bold ${
+            isP1 ? 'text-cyan-300' : 'text-violet-300'
+          }`}>
+            Player {playerNumber ?? '?'}
+          </div>
+        </div>
+
+        {/* Status message */}
+        <div className="flex flex-col items-center gap-2">
+          <p className="text-gray-400 text-sm text-center">
+            Waiting for host to choose a game...
+          </p>
+          {/* Subtle animated dots */}
+          <div className="flex gap-1.5">
+            <div className={`w-2 h-2 rounded-full animate-bounce ${
+              isP1 ? 'bg-cyan-400/60' : 'bg-violet-400/60'
+            }`} style={{ animationDelay: '0ms' }} />
+            <div className={`w-2 h-2 rounded-full animate-bounce ${
+              isP1 ? 'bg-cyan-400/60' : 'bg-violet-400/60'
+            }`} style={{ animationDelay: '150ms' }} />
+            <div className={`w-2 h-2 rounded-full animate-bounce ${
+              isP1 ? 'bg-cyan-400/60' : 'bg-violet-400/60'
+            }`} style={{ animationDelay: '300ms' }} />
+          </div>
+        </div>
+
+        {/* Gyro readiness indicator */}
+        <div className={`mt-4 px-4 py-2 rounded-xl border text-xs font-mono ${
+          isP1
+            ? 'border-cyan-500/20 bg-cyan-500/5 text-cyan-500/70'
+            : 'border-violet-500/20 bg-violet-500/5 text-violet-500/70'
+        }`}>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full animate-pulse ${
+              isP1 ? 'bg-cyan-400' : 'bg-violet-400'
+            }`} />
+            Your phone is ready as a controller
+          </div>
+        </div>
+
+        {/* Branding */}
+        <div className="absolute bottom-4 flex items-center gap-2 opacity-30">
+          <Logo size={20} animate={false} />
+          <span className="text-[10px] text-gray-500 font-mono tracking-widest">GYROPLAY</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Solo mode: existing game grid ──
   return (
     <div className="w-full h-full flex flex-col overflow-y-auto overscroll-contain pb-8">
       {/* Header — compact */}
