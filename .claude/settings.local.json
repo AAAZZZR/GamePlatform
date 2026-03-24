@@ -28,7 +28,10 @@
       "Bash(find /c/Users/Owner/Desktop/gyrogame -name *.html -type f)",
       "Bash(find /c/Users/Owner/Desktop/gyrogame -name index.html -o -name *.html)",
       "Bash(grep -r \"\\\\.svg\\\\|\\\\.ico\" /c/Users/Owner/Desktop/gyrogame --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(find /c/Users/Owner/Desktop/gyrogame -type f \\\\\\(-name *sensitivity* -o -name *gyro* -o -name *controller* \\\\\\))",
+      "Bash(find /c/Users/Owner/Desktop/gyrogame/platform -type f -name *.ts -o -name *.tsx)",
+      "Bash(find /c/Users/Owner/Desktop/gyrogame -type f \\\\\\(-iname *.png -o -iname *.jpg -o -iname *.jpeg -o -iname *.gif -o -iname *.svg \\\\\\) ! -path */node_modules/* ! -path */.next/* ! -path */.git/*)"
     ]
   }
 }

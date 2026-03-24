@@ -18,7 +18,7 @@ const CFG = {
   GRAVITY: 0.25,       // subtracted from vy each frame (lower = floatier)
   JUMP_VY: 9,          // upward velocity on normal bounce
   SPRING_VY: 15,       // upward velocity on spring bounce
-  MOVE_SPEED: 1,
+  MOVE_SPEED: 0.5,
   BULLET_SIZE: 5,
   BULLET_SPEED: 10,
   MONSTER_W: 28,
@@ -747,39 +747,6 @@ export default function Game7({ inputRef, paused, callbacks }: Props) {
         </div>
       )}
 
-      {/* READY overlay — semi-transparent so game world shows through */}
-      {status === 'READY' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-30"
-          style={{ backgroundColor: 'rgba(250,248,239,0.7)' }}>
-          <div style={{ fontSize: 42, fontWeight: 900, color: '#5cb85c', textShadow: '2px 2px 0 #4a9a4a', marginBottom: 16 }}>
-            Doodle Jump
-          </div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#8a8570', animation: 'doodlePulse 1.5s ease-in-out infinite' }}>
-            TILT TO PLAY
-          </div>
-        </div>
-      )}
-
-      {/* GAME OVER overlay */}
-      {status === 'GAME_OVER' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-30" style={{ backgroundColor: 'rgba(250,248,239,0.85)' }}>
-          <div style={{ fontSize: 36, fontWeight: 900, color: '#e74c3c', textShadow: '2px 2px 0 #c0392b', marginBottom: 16 }}>
-            GAME OVER
-          </div>
-          <div style={{ fontSize: 18, color: '#8a8570', marginBottom: 8 }}>HEIGHT</div>
-          <div style={{ fontSize: 42, fontWeight: 900, color: '#4a4a3a', marginBottom: 24 }}>{score}</div>
-          <div style={{ fontSize: 16, color: '#aaa59a', animation: 'doodlePulse 1.5s ease-in-out infinite' }}>
-            Press RESTART to try again
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        @keyframes doodlePulse {
-          0%, 100% { opacity: 0.6; transform: scale(1); }
-          50% { opacity: 1; transform: scale(1.05); }
-        }
-      `}</style>
     </div>
   );
 }

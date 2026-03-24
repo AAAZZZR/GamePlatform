@@ -57,8 +57,10 @@ const CFG = {
   GROUND_Y: 0,
   GROUND_PUSH_Y: 15,
   GROUND_PUSH_RATE: 0.04,
-  // Pickup
-  PICKUP_HITBOX: 4,
+  // Ammo regen
+  AMMO_REGEN_RATE: 4,  // ammo per second (passive regen)
+  // Brake
+  BRAKE_DECEL: 0.03,
   // Radar
   RADAR_RANGE: 400,
 };
@@ -97,12 +99,6 @@ interface Bullet {
   damage: number;
 }
 
-interface Pickup {
-  id: number;
-  pos: Vec3;
-  active: boolean;
-}
-
 interface Particle {
   id: number;
   pos: Vec3;
@@ -120,14 +116,12 @@ interface GameState {
     hp: number;
     ammo: number;
     maxAmmo: number;
-    reloadTimer: number;
     rollAngle: number;
     score: number;
     kills: number;
   };
   enemies: Enemy[];
   bullets: Bullet[];
-  pickups: Pickup[];
   explosions: Particle[];
   status: GameStatus;
   startTime: number;
@@ -158,16 +152,6 @@ function v3lenXZ(a: Vec3, b: Vec3): number {
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
-}
-
-function makePickup(): Pickup {
-  const angle = Math.random() * Math.PI * 2;
-  const r = 60 + Math.random() * 250;
-  return {
-    id: nid(),
-    pos: { x: Math.cos(angle) * r, y: 30 + Math.random() * 100, z: Math.sin(angle) * r },
-    active: true,
-  };
 }
 
 function spawnEnemy(playerPos: Vec3, playerOrientation: Quat, phase: number): Enemy {
@@ -282,14 +266,12 @@ function useGameLogic(
         hp: CFG.PLAYER_HP,
         ammo: CFG.MAX_AMMO,
         maxAmmo: CFG.MAX_AMMO,
-        reloadTimer: 0,
         rollAngle: 0,
         score: 0,
         kills: 0,
       },
       enemies: [],
       bullets: [],
-      pickups: [makePickup(), makePickup()],
       explosions: [],
       status: 'READY' as GameStatus,
       startTime: 0,
@@ -313,8 +295,6 @@ function useGameLogic(
   enemiesRef.current = gs.enemies;
   const bulletsRef = useRef(gs.bullets);
   bulletsRef.current = gs.bullets;
-  const pickupsRef = useRef(gs.pickups);
-  pickupsRef.current = gs.pickups;
   const explosionsRef = useRef(gs.explosions);
   explosionsRef.current = gs.explosions;
 
@@ -336,6 +316,8 @@ function useGameLogic(
     const _eV3 = new THREE.Vector3();
     const _toTarget = new THREE.Vector3();
     const smoothed = { x: 0, y: 0 };
+    const spottedEnemies = new Set<number>(); // track which enemies have been called out
+    let lastProxWarn = 0;
 
     const loop = (now: number) => {
       const dt = Math.min((now - prevT) / 16.667, 3);
@@ -358,16 +340,19 @@ function useGameLogic(
         const nowMs = Date.now();
         const elapsed = (nowMs - s.startTime) / 1000;
         const phase = getPhase(elapsed);
-        const isBoosting = !!input.actions['boost'];
+        const isThrottling = !!input.actions['throttle'];
+        const isBraking = !!input.actions['brake'];
         const isFiring = !!input.actions['fire'];
 
         // ─── Player Flight Physics ───
-        // 1. Smooth gyro input
-        smoothed.x += (input.move.x - smoothed.x) * 0.12;
-        smoothed.y += (input.move.y - smoothed.y) * 0.12;
+        // 1. Smooth gyro input (normalize to -1..+1; platform bakes speed multiplier into input)
+        const nx = input.move.x / 15;
+        const ny = input.move.y / 15;
+        smoothed.x += (nx - smoothed.x) * 0.12;
+        smoothed.y += (ny - smoothed.y) * 0.12;
 
-        // 2. Rotation deltas in local frame
-        const dRoll = smoothed.x * CFG.ROLL_SENSITIVITY * dt;
+        // 2. Rotation deltas in local frame (negate roll so tilt-right = bank-right)
+        const dRoll = -smoothed.x * CFG.ROLL_SENSITIVITY * dt;
         const dPitch = smoothed.y * CFG.PITCH_SENSITIVITY * dt;
 
         // Track roll angle for bank-to-turn
@@ -379,7 +364,7 @@ function useGameLogic(
         }
         rollAngle = clamp(rollAngle, -1.2, 1.2);
 
-        const dYaw = -rollAngle * CFG.YAW_FROM_ROLL * dt;
+        const dYaw = rollAngle * CFG.YAW_FROM_ROLL * dt;
 
         // 3. Apply to quaternion (multiply on right = local frame)
         _q.set(s.player.orientation.x, s.player.orientation.y, s.player.orientation.z, s.player.orientation.w);
@@ -394,10 +379,13 @@ function useGameLogic(
         // 4. Extract forward: (0,0,-1) rotated by quaternion
         _forward.set(0, 0, -1).applyQuaternion(_q);
 
-        // 5. Speed model
+        // 5. Speed model (throttle / brake)
         let speed = s.player.speed;
-        if (isBoosting) {
+        if (isThrottling) {
           speed = Math.min(CFG.MAX_SPEED, speed * (1 + (CFG.BOOST_MULT - 1) * 0.1 * dt));
+        }
+        if (isBraking) {
+          speed = Math.max(CFG.MIN_SPEED, speed - CFG.BRAKE_DECEL * dt);
         }
         if (_forward.y < -0.1) {
           speed += CFG.DIVE_ACCEL * dt;
@@ -406,7 +394,7 @@ function useGameLogic(
           speed -= CFG.CLIMB_DECEL * dt;
         }
         speed += (CFG.BASE_SPEED - speed) * CFG.DRAG_RATE * dt;
-        speed = clamp(speed, CFG.MIN_SPEED, isBoosting ? CFG.MAX_SPEED : CFG.MAX_SPEED * 0.85);
+        speed = clamp(speed, CFG.MIN_SPEED, isThrottling ? CFG.MAX_SPEED : CFG.MAX_SPEED * 0.85);
 
         // 6. Move along forward
         const px = s.player.pos.x + _forward.x * speed * dt;
@@ -441,23 +429,16 @@ function useGameLogic(
         const newOrientation: Quat = { w: _q.w, x: _q.x, y: _q.y, z: _q.z };
         const newPos: Vec3 = { x: adjustedPx, y: adjustedPy, z: adjustedPz };
 
-        // ─── Combat: Player Firing ───
+        // ─── Combat: Player Firing + Ammo Auto-Regen ───
         let ammo = s.player.ammo;
-        let reloadTimer = s.player.reloadTimer;
         const newBullets = [...s.bullets];
         let lastFireTime = s.lastFireTime;
 
-        // Reload logic
-        if (reloadTimer > 0) {
-          reloadTimer -= 16.667 * dt;
-          if (reloadTimer <= 0) {
-            reloadTimer = 0;
-            ammo = CFG.MAX_AMMO;
-          }
-        }
+        // Passive ammo regen (always active)
+        ammo = Math.min(CFG.MAX_AMMO, ammo + CFG.AMMO_REGEN_RATE / 60 * dt);
 
         // Fire
-        if (isFiring && ammo > 0 && reloadTimer <= 0 && (nowMs - lastFireTime) >= CFG.FIRE_RATE) {
+        if (isFiring && ammo >= 1 && (nowMs - lastFireTime) >= CFG.FIRE_RATE) {
           ammo--;
           lastFireTime = nowMs;
           sfx.shoot();
@@ -469,9 +450,6 @@ function useGameLogic(
             isEnemy: false,
             damage: CFG.BULLET_DAMAGE,
           });
-          if (ammo <= 0) {
-            reloadTimer = CFG.RELOAD_TIME;
-          }
         }
 
         // ─── Update Bullets ───
@@ -635,23 +613,28 @@ function useGameLogic(
           }
         }
 
-        // ─── Pickup Collection ───
-        const newPickups = [...s.pickups];
-        for (let pi = newPickups.length - 1; pi >= 0; pi--) {
-          const p = newPickups[pi];
-          if (!p.active) continue;
-          if (v3len(p.pos, newPos) < CFG.PICKUP_HITBOX) {
-            p.active = false;
-            ammo = CFG.MAX_AMMO;
-            reloadTimer = 0;
-            sfx.powerup();
-            score += 100;
+        // ─── Enemy Detection Alerts ───
+        {
+          let closestDist = Infinity;
+          for (const e of newEnemies) {
+            const d = v3len(e.pos, newPos);
+            if (d < closestDist) closestDist = d;
+            // First-time spot callout
+            if (d < CFG.ENEMY_DETECT_RANGE && !spottedEnemies.has(e.id)) {
+              spottedEnemies.add(e.id);
+              sfx.enemySpotted();
+            }
           }
-        }
-        // Respawn inactive pickups
-        for (let pi = newPickups.length - 1; pi >= 0; pi--) {
-          if (!newPickups[pi].active) {
-            newPickups[pi] = makePickup();
+          // Proximity warning (closer = louder)
+          if (closestDist < CFG.ENEMY_DETECT_RANGE && nowMs - lastProxWarn > 800) {
+            const vol = 1 - closestDist / CFG.ENEMY_DETECT_RANGE;
+            sfx.proximityWarn(vol);
+            lastProxWarn = nowMs;
+          }
+          // Clean up spotted set for despawned enemies
+          const aliveIds = new Set(newEnemies.map(e => e.id));
+          for (const id of spottedEnemies) {
+            if (!aliveIds.has(id)) spottedEnemies.delete(id);
           }
         }
 
@@ -697,14 +680,12 @@ function useGameLogic(
             hp: Math.max(0, hp),
             ammo,
             maxAmmo: CFG.MAX_AMMO,
-            reloadTimer,
             rollAngle,
             score,
             kills,
           },
           enemies: newEnemies,
           bullets: newBullets,
-          pickups: newPickups,
           explosions: newExplosions,
           status: newStatus,
           startTime: s.startTime,
@@ -722,7 +703,7 @@ function useGameLogic(
     return () => cancelAnimationFrame(loopId);
   }, [paused, inputRef, getInitialState]);
 
-  return { gs, playerRef, enemiesRef, bulletsRef, pickupsRef, explosionsRef };
+  return { gs, playerRef, enemiesRef, bulletsRef, explosionsRef };
 }
 
 // ─── AI Steering Helper ───
@@ -958,45 +939,6 @@ function BulletMeshes({ bulletsRef }: { bulletsRef: MutableRefObject<Bullet[]> }
   );
 }
 
-// ─── Ammo Pickups ───
-function PickupMeshes({ pickupsRef }: { pickupsRef: MutableRefObject<Pickup[]> }) {
-  const maxPickups = 4;
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
-  const timeRef = useRef(0);
-
-  useFrame((_, delta) => {
-    timeRef.current += delta;
-    const pickups = pickupsRef.current;
-    for (let i = 0; i < maxPickups; i++) {
-      const mesh = refs.current[i];
-      if (!mesh) continue;
-      if (i < pickups.length && pickups[i].active) {
-        const p = pickups[i];
-        mesh.position.set(p.pos.x, p.pos.y + Math.sin(timeRef.current * 2 + i) * 2, p.pos.z);
-        mesh.rotation.y = timeRef.current * 1.5 + i;
-        mesh.rotation.x = timeRef.current * 0.8;
-        mesh.visible = true;
-      } else {
-        mesh.visible = false;
-      }
-    }
-  });
-
-  return (
-    <>
-      {Array.from({ length: maxPickups }, (_, i) => (
-        <mesh
-          key={`pk${i}`}
-          ref={(el) => { refs.current[i] = el; }}
-          visible={false}
-        >
-          <octahedronGeometry args={[2, 0]} />
-          <meshBasicMaterial color="#ffcc00" wireframe />
-        </mesh>
-      ))}
-    </>
-  );
-}
 
 // ─── Explosion Particles ───
 function ExplosionParticles({ explosionsRef }: { explosionsRef: MutableRefObject<Particle[]> }) {
@@ -1080,22 +1022,23 @@ function ChaseCam({ playerRef }: { playerRef: MutableRefObject<GameState['player
 function Clouds() {
   const clusters = useMemo(() => {
     const result: { x: number; y: number; z: number; spheres: { dx: number; dy: number; dz: number; s: number }[] }[] = [];
-    for (let i = 0; i < 10; i++) {
-      const angle = (i / 10) * Math.PI * 2;
-      const r = 200 + Math.random() * 300;
+    for (let i = 0; i < 18; i++) {
+      const angle = (i / 18) * Math.PI * 2 + Math.random() * 0.3;
+      const r = 150 + Math.random() * 350;
       const cluster = {
         x: Math.cos(angle) * r,
-        y: 80 + Math.random() * 150,
+        y: 100 + Math.random() * 160,
         z: Math.sin(angle) * r,
         spheres: [] as { dx: number; dy: number; dz: number; s: number }[],
       };
-      const count = 3 + Math.floor(Math.random() * 4);
+      // Larger, more overlapping spheres → reads as a cloud mass
+      const count = 5 + Math.floor(Math.random() * 4);
       for (let j = 0; j < count; j++) {
         cluster.spheres.push({
           dx: (Math.random() - 0.5) * 20,
-          dy: (Math.random() - 0.5) * 6,
+          dy: (Math.random() - 0.5) * 4,
           dz: (Math.random() - 0.5) * 12,
-          s: 4 + Math.random() * 8,
+          s: 8 + Math.random() * 14,
         });
       }
       result.push(cluster);
@@ -1109,8 +1052,8 @@ function Clouds() {
         <group key={ci} position={[c.x, c.y, c.z]}>
           {c.spheres.map((sp, si) => (
             <mesh key={si} position={[sp.dx, sp.dy, sp.dz]}>
-              <sphereGeometry args={[sp.s, 6, 6]} />
-              <meshBasicMaterial color="#1a1a4e" transparent opacity={0.25} />
+              <sphereGeometry args={[sp.s, 12, 12]} />
+              <meshBasicMaterial color="#ffffff" transparent opacity={0.55} depthWrite={false} />
             </mesh>
           ))}
         </group>
@@ -1119,13 +1062,21 @@ function Clouds() {
   );
 }
 
-// ─── Ground Grid ───
+// ─── Ground (Ocean) ───
 function GroundGrid() {
   return (
-    <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-      <planeGeometry args={[2000, 2000, 50, 50]} />
-      <meshBasicMaterial color="#0a2244" wireframe />
-    </mesh>
+    <>
+      {/* Ocean surface */}
+      <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[2000, 2000]} />
+        <meshStandardMaterial color="#1a8caa" roughness={0.3} metalness={0.1} />
+      </mesh>
+      {/* Wave grid overlay */}
+      <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[2000, 2000, 60, 60]} />
+        <meshBasicMaterial color="#3ab8d4" wireframe transparent opacity={0.12} />
+      </mesh>
+    </>
   );
 }
 
@@ -1136,23 +1087,21 @@ function Scene({
   playerRef,
   enemiesRef,
   bulletsRef,
-  pickupsRef,
   explosionsRef,
   status,
 }: {
   playerRef: MutableRefObject<GameState['player']>;
   enemiesRef: MutableRefObject<Enemy[]>;
   bulletsRef: MutableRefObject<Bullet[]>;
-  pickupsRef: MutableRefObject<Pickup[]>;
   explosionsRef: MutableRefObject<Particle[]>;
   status: GameStatus;
 }) {
   return (
     <>
-      <color attach="background" args={['#0a0a2e']} />
-      <fog attach="fog" args={['#0a0a2e', 100, 500]} />
-      <hemisphereLight args={['#1a1a4e', '#0a0a0a', 0.4]} />
-      <directionalLight position={[100, 200, 50]} intensity={0.8} color="#ffeedd" />
+      <color attach="background" args={['#7ec8e3']} />
+      <fog attach="fog" args={['#7ec8e3', 200, 800]} />
+      <hemisphereLight args={['#b1e1ff', '#3a9960', 0.6]} />
+      <directionalLight position={[100, 200, 50]} intensity={1.0} color="#fff5e0" />
 
       <GroundGrid />
       <Clouds />
@@ -1170,7 +1119,6 @@ function Scene({
       <EnemyJet enemiesRef={enemiesRef} index={2} />
 
       <BulletMeshes bulletsRef={bulletsRef} />
-      <PickupMeshes pickupsRef={pickupsRef} />
       <ExplosionParticles explosionsRef={explosionsRef} />
     </>
   );
@@ -1230,10 +1178,9 @@ function Crosshair() {
   );
 }
 
-function Radar({ player, enemies, pickups }: {
+function Radar({ player, enemies }: {
   player: GameState['player'];
   enemies: Enemy[];
-  pickups: Pickup[];
 }) {
   // Compute player heading on XZ plane from orientation
   const q = new THREE.Quaternion(player.orientation.x, player.orientation.y, player.orientation.z, player.orientation.w);
@@ -1302,24 +1249,6 @@ function Radar({ player, enemies, pickups }: {
           />
         );
       })}
-      {/* Pickup dots */}
-      {pickups.filter(p => p.active).map(pk => {
-        const p = projectToRadar(pk.pos);
-        return (
-          <div
-            key={pk.id}
-            style={{
-              position: 'absolute',
-              width: 4,
-              height: 4,
-              borderRadius: '50%',
-              background: '#ffcc00',
-              transform: `translate(${p.x}px, ${p.y}px)`,
-              opacity: p.inRange ? 1 : 0.4,
-            }}
-          />
-        );
-      })}
       {/* Compass N */}
       <div style={{
         position: 'absolute',
@@ -1343,18 +1272,17 @@ interface Props {
 }
 
 export default function Game9({ inputRef, paused, callbacks }: Props) {
-  const { gs, playerRef, enemiesRef, bulletsRef, pickupsRef, explosionsRef } = useGameLogic(inputRef, paused, callbacks);
-  const { status, player, enemies, pickups, phase } = gs;
+  const { gs, playerRef, enemiesRef, bulletsRef, explosionsRef } = useGameLogic(inputRef, paused, callbacks);
+  const { status, player, enemies, phase } = gs;
 
   const hpPct = player.hp / CFG.PLAYER_HP;
   const ammoPct = player.ammo / player.maxAmmo;
-  const reloadPct = player.reloadTimer > 0 ? 1 - (player.reloadTimer / CFG.RELOAD_TIME) : 1;
   const speedKmh = Math.floor(player.speed * 500);
 
   const hpColor = hpPct > 0.6 ? '#00ff66' : hpPct > 0.3 ? '#ffcc00' : '#ff3300';
 
   return (
-    <div className="relative w-full h-screen overflow-hidden select-none" style={{ background: '#0a0a2e' }}>
+    <div className="relative w-full h-screen overflow-hidden select-none" style={{ background: '#7ec8e3' }}>
       {/* R3F Canvas */}
       <Canvas
         camera={{ position: [0, 50, 30], fov: 70, near: 0.1, far: 1000 }}
@@ -1365,7 +1293,6 @@ export default function Game9({ inputRef, paused, callbacks }: Props) {
           playerRef={playerRef}
           enemiesRef={enemiesRef}
           bulletsRef={bulletsRef}
-          pickupsRef={pickupsRef}
           explosionsRef={explosionsRef}
           status={status}
         />
@@ -1412,50 +1339,28 @@ export default function Game9({ inputRef, paused, callbacks }: Props) {
           </div>
 
           {/* Radar — top-right */}
-          <Radar player={player} enemies={enemies} pickups={pickups} />
+          <Radar player={player} enemies={enemies} />
 
           {/* Ammo — bottom-left */}
           <div className="absolute bottom-4 left-4 z-10" style={{ width: 140 }}>
-            {player.reloadTimer > 0 ? (
-              <>
-                <div className="text-xs font-mono text-orange-400 animate-pulse mb-1">RELOADING...</div>
-                <div style={{
-                  width: '100%',
-                  height: 6,
-                  background: 'rgba(255,255,255,0.1)',
-                  borderRadius: 3,
-                  overflow: 'hidden',
-                }}>
-                  <div style={{
-                    width: `${reloadPct * 100}%`,
-                    height: '100%',
-                    background: '#ff8800',
-                    borderRadius: 3,
-                    transition: 'width 0.1s',
-                  }} />
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="text-xs font-mono text-white/60 mb-1">
-                  AMMO {player.ammo}/{player.maxAmmo}
-                </div>
-                <div style={{
-                  width: '100%',
-                  height: 6,
-                  background: 'rgba(255,255,255,0.1)',
-                  borderRadius: 3,
-                  overflow: 'hidden',
-                }}>
-                  <div style={{
-                    width: `${ammoPct * 100}%`,
-                    height: '100%',
-                    background: ammoPct > 0.3 ? '#00ccff' : '#ff4400',
-                    borderRadius: 3,
-                  }} />
-                </div>
-              </>
-            )}
+            <div className="text-xs font-mono text-white/60 mb-1">
+              AMMO {Math.floor(player.ammo)}/{player.maxAmmo}
+            </div>
+            <div style={{
+              width: '100%',
+              height: 6,
+              background: 'rgba(255,255,255,0.1)',
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                width: `${ammoPct * 100}%`,
+                height: '100%',
+                background: ammoPct > 0.3 ? '#00ccff' : '#ff4400',
+                borderRadius: 3,
+                transition: 'width 0.15s',
+              }} />
+            </div>
           </div>
 
           {/* Speed — bottom-center */}

@@ -390,11 +390,13 @@ function useGameLogic(
         const nowMs = Date.now();
         const dtSec = dt * 0.016667;
 
-        // ─── Camera look (gyro) ───
-        smoothed.x += (input.move.x - smoothed.x) * CFG.LOOK_SMOOTH;
-        smoothed.y += (input.move.y - smoothed.y) * CFG.LOOK_SMOOTH;
+        // ─── Camera look (gyro, normalize to -1..+1; platform bakes speed multiplier) ───
+        const nx = input.move.x / 15;
+        const ny = input.move.y / 15;
+        smoothed.x += (nx - smoothed.x) * CFG.LOOK_SMOOTH;
+        smoothed.y += (ny - smoothed.y) * CFG.LOOK_SMOOTH;
 
-        let yaw = s.yaw + smoothed.x * CFG.YAW_SENSITIVITY * 0.03 * dt;
+        let yaw = s.yaw - smoothed.x * CFG.YAW_SENSITIVITY * 0.03 * dt;
         let pitch = s.pitch + smoothed.y * CFG.PITCH_SENSITIVITY * 0.03 * dt;
         pitch = clamp(pitch, CFG.PITCH_MIN, CFG.PITCH_MAX);
 
@@ -675,6 +677,31 @@ function Environment() {
     return trees;
   }, []);
 
+  const cloudClusters = useMemo(() => {
+    const result: { x: number; y: number; z: number; spheres: { dx: number; dy: number; dz: number; s: number }[] }[] = [];
+    for (let i = 0; i < 14; i++) {
+      const angle = (i / 14) * Math.PI * 2 + Math.random() * 0.3;
+      const r = 80 + Math.random() * 150;
+      const cluster = {
+        x: Math.cos(angle) * r,
+        y: 50 + Math.random() * 80,
+        z: Math.sin(angle) * r - 20,
+        spheres: [] as { dx: number; dy: number; dz: number; s: number }[],
+      };
+      const count = 4 + Math.floor(Math.random() * 4);
+      for (let j = 0; j < count; j++) {
+        cluster.spheres.push({
+          dx: (Math.random() - 0.5) * 15,
+          dy: (Math.random() - 0.5) * 3,
+          dz: (Math.random() - 0.5) * 10,
+          s: 5 + Math.random() * 8,
+        });
+      }
+      result.push(cluster);
+    }
+    return result;
+  }, []);
+
   return (
     <>
       {/* Sky dome */}
@@ -682,6 +709,18 @@ function Environment() {
         <sphereGeometry args={[300, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
         <meshBasicMaterial color="#87CEEB" side={THREE.BackSide} />
       </mesh>
+
+      {/* Clouds */}
+      {cloudClusters.map((c, ci) => (
+        <group key={`cloud${ci}`} position={[c.x, c.y, c.z]}>
+          {c.spheres.map((sp, si) => (
+            <mesh key={si} position={[sp.dx, sp.dy, sp.dz]}>
+              <sphereGeometry args={[sp.s, 12, 12]} />
+              <meshBasicMaterial color="#ffffff" transparent opacity={0.55} depthWrite={false} />
+            </mesh>
+          ))}
+        </group>
+      ))}
 
       {/* Ground */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>

@@ -12,7 +12,7 @@ const CFG = {
   BOARD_W: 700,
   BOARD_H: 500,
   BALL_R: 10,
-  GRAVITY: 0.5,
+  GRAVITY: 0.35,
   FRICTION: 0.97,
   MAX_VELOCITY: 8,
   BOUNCE_DAMPING: 0.6,
@@ -519,6 +519,7 @@ function useLabyrinthLogic(
             level: nextLevel,
             ball: { x: maze.start.x, y: maze.start.y, vx: 0, vy: 0 },
             levelStatus: 'READY',
+            platformStatus: 'READY',
             celebrateTimer: 0,
             startTime: 0,
           }));

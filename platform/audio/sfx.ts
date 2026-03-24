@@ -139,19 +139,37 @@ export const sfx = {
     tone(120, 0.12, 'sine', 0.2);
   },
 
-  /** 彈藥補給 — 上升琶音 */
-  ammoPickup() {
-    tone(523, 0.06, 'square', 0.12);
-    tone(659, 0.06, 'square', 0.12, 0.06);
-    tone(784, 0.08, 'square', 0.15, 0.12);
-  },
-
   /** 敵機擊毀 — 爆炸 + 短旋律 */
   enemyDestroyed() {
     noise(0.35, 1200, 0.22);
     tone(80, 0.25, 'sine', 0.2);
     tone(523, 0.06, 'square', 0.08, 0.15);
     tone(784, 0.06, 'square', 0.08, 0.2);
+  },
+
+  /** 發現敵機 — 語音 "Enemy spotted" */
+  enemySpotted() {
+    debounce('spotted', 3000, () => {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance('Enemy spotted');
+        u.rate = 1.3;
+        u.pitch = 0.9;
+        u.volume = 0.7;
+        speechSynthesis.speak(u);
+      }
+      // Radar-ping backup tone
+      sweep(800, 1600, 0.08, 'sine', 0.1);
+      tone(1200, 0.05, 'square', 0.08, 0.1);
+    });
+  },
+
+  /** 敵機接近警報 — 音量隨距離變化 */
+  proximityWarn(vol: number) {
+    debounce('proximity', 800, () => {
+      const v = Math.min(0.25, vol * 0.25);
+      tone(900, 0.06, 'square', v);
+      tone(900, 0.06, 'square', v, 0.1);
+    });
   },
 
   // ━━━ Game 10: Skeet Shooter ━━━━━━━━━━━━━━━━━━━━━
