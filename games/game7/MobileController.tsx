@@ -28,10 +28,11 @@ export default function DoodleJumpMobileController({ socket, roomId, sendAction 
 
   return (
     <div
-      className="w-full h-full relative overflow-hidden select-none touch-none flex flex-col items-center justify-between"
+      className="w-full h-full relative overflow-hidden select-none touch-manipulation flex flex-col items-center justify-between"
       style={{
         background: 'linear-gradient(180deg, #faf8ef 0%, #f0ead6 100%)',
         fontFamily: "'Patrick Hand', 'Comic Sans MS', cursive, sans-serif",
+        paddingBottom: 'env(safe-area-inset-bottom, 12px)',
       }}
     >
       {/* Top: Tilt hint + doodler icon */}
@@ -95,7 +96,7 @@ export default function DoodleJumpMobileController({ socket, roomId, sendAction 
       {/* Center: Fire button */}
       <div className="flex items-center justify-center flex-1">
         <button
-          className="relative flex items-center justify-center"
+          className="relative flex items-center justify-center touch-none"
           style={{
             width: 140,
             height: 140,
@@ -141,7 +142,7 @@ export default function DoodleJumpMobileController({ socket, roomId, sendAction 
       </div>
 
       {/* Bottom: Start / Restart buttons */}
-      <div className="flex gap-6 pb-10">
+      <div className="flex gap-6 pb-14">
         <button
           style={{
             padding: '12px 28px',

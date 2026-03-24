@@ -17,9 +17,10 @@ export default function LabyrinthMobileController({ socket, roomId, sendAction }
 
   return (
     <div
-      className="w-full h-full relative overflow-hidden select-none touch-none flex flex-col items-center justify-center gap-6"
+      className="w-full h-full relative overflow-hidden select-none touch-manipulation flex flex-col items-center justify-center gap-6"
       style={{
         background: 'linear-gradient(160deg, #2d1a0e 0%, #1a0e07 50%, #2d1a0e 100%)',
+        paddingBottom: 'env(safe-area-inset-bottom, 12px)',
       }}
     >
       {/* Tilt visualization */}
@@ -56,7 +57,7 @@ export default function LabyrinthMobileController({ socket, roomId, sendAction }
       {/* RESTART button — START is handled by MobileGameOverlay */}
       <div className="flex flex-col items-center gap-4">
         <button
-          className="relative rounded-full flex flex-col items-center justify-center transition-all duration-75 active:scale-95"
+          className="relative rounded-full flex flex-col items-center justify-center transition-all duration-75 active:scale-95 touch-none"
           style={{
             width: 140,
             height: 140,

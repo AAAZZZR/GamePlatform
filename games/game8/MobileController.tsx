@@ -38,9 +38,10 @@ export default function PaperPlaneMobileController({ socket, roomId, sendAction 
 
   return (
     <div
-      className="w-full h-full relative overflow-hidden select-none touch-none flex flex-col items-center justify-between py-8"
+      className="w-full h-full relative overflow-hidden select-none touch-manipulation flex flex-col items-center justify-between py-8"
       style={{
         background: 'linear-gradient(180deg, #E8F4FD 0%, #B8D8F0 50%, #A0C4E0 100%)',
+        paddingBottom: 'env(safe-area-inset-bottom, 12px)',
       }}
     >
       {/* Top: Title + Buttons */}
@@ -135,6 +136,7 @@ export default function PaperPlaneMobileController({ socket, roomId, sendAction 
             border-[4px] transition-all duration-75
             flex flex-col items-center justify-center gap-1
             active:scale-95
+            touch-none
           `}
           style={{
             background: isBoosting

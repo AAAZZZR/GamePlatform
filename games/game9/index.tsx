@@ -16,15 +16,15 @@ const CFG = {
   ROLL_SENSITIVITY: 0.035,
   PITCH_SENSITIVITY: 0.03,
   YAW_FROM_ROLL: 0.025,
-  AUTO_LEVEL_RATE: 0.015,
+  AUTO_LEVEL_RATE: 0.025,
   // Speed
   BASE_SPEED: 1.5,
   MIN_SPEED: 0.8,
   MAX_SPEED: 3.0,
-  BOOST_MULT: 1.6,
-  DIVE_ACCEL: 0.003,
-  CLIMB_DECEL: 0.002,
-  DRAG_RATE: 0.003,
+  BOOST_MULT: 1.4,
+  DIVE_ACCEL: 0.004,
+  CLIMB_DECEL: 0.0025,
+  DRAG_RATE: 0.005,
   // Combat
   MAX_AMMO: 60,
   FIRE_RATE: 80,
@@ -379,20 +379,25 @@ function useGameLogic(
         // 4. Extract forward: (0,0,-1) rotated by quaternion
         _forward.set(0, 0, -1).applyQuaternion(_q);
 
-        // 5. Speed model (throttle / brake)
+        // 5. Speed model (throttle / brake) — gradual ramp with smooth drag
         let speed = s.player.speed;
         if (isThrottling) {
-          speed = Math.min(CFG.MAX_SPEED, speed * (1 + (CFG.BOOST_MULT - 1) * 0.1 * dt));
+          // Gradual additive acceleration toward max — feels like building thrust
+          const targetSpeed = CFG.BASE_SPEED * CFG.BOOST_MULT;
+          speed += (targetSpeed - speed) * 0.02 * dt;
         }
         if (isBraking) {
-          speed = Math.max(CFG.MIN_SPEED, speed - CFG.BRAKE_DECEL * dt);
+          speed += (CFG.MIN_SPEED - speed) * 0.04 * dt;
         }
-        if (_forward.y < -0.1) {
-          speed += CFG.DIVE_ACCEL * dt;
+        // Gravity-assisted dive/climb: stronger effect for steeper angles
+        const pitchFactor = clamp(_forward.y, -1, 1);
+        if (pitchFactor < -0.1) {
+          speed += CFG.DIVE_ACCEL * (-pitchFactor) * dt;
         }
-        if (_forward.y > 0.1) {
-          speed -= CFG.CLIMB_DECEL * dt;
+        if (pitchFactor > 0.1) {
+          speed -= CFG.CLIMB_DECEL * pitchFactor * dt;
         }
+        // Natural drag: smoothly returns toward base speed (stronger when far from base)
         speed += (CFG.BASE_SPEED - speed) * CFG.DRAG_RATE * dt;
         speed = clamp(speed, CFG.MIN_SPEED, isThrottling ? CFG.MAX_SPEED : CFG.MAX_SPEED * 0.85);
 
@@ -409,6 +414,12 @@ function useGameLogic(
           _q.multiply(_qDelta);
           _q.normalize();
           py = Math.max(2, py);
+        }
+
+        // 7b. Ground crash: if altitude < 5 and diving downward, kill the player
+        let groundCrash = false;
+        if (py < 5 && _forward.y < -0.2) {
+          groundCrash = true;
         }
 
         // 8. Arena boundary soft-push
@@ -469,6 +480,7 @@ function useGameLogic(
         let score = s.player.score;
         let kills = s.player.kills;
         let hp = s.player.hp;
+        if (groundCrash) hp = 0;
         let newExplosions = [...s.explosions];
 
         for (let ei = newEnemies.length - 1; ei >= 0; ei--) {
@@ -1223,6 +1235,16 @@ function Radar({ player, enemies }: {
         justifyContent: 'center',
       }}
     >
+      {/* Player heading indicator (line pointing forward = up on radar) */}
+      <div style={{
+        position: 'absolute',
+        width: 2,
+        height: 14,
+        background: 'linear-gradient(to top, transparent, #00ccff)',
+        transformOrigin: 'center bottom',
+        transform: 'translateY(-7px)',
+        borderRadius: 1,
+      }} />
       {/* Player dot (center) */}
       <div style={{
         position: 'absolute',
@@ -1363,12 +1385,40 @@ export default function Game9({ inputRef, paused, callbacks }: Props) {
             </div>
           </div>
 
-          {/* Speed — bottom-center */}
+          {/* Speed + Altitude — bottom-center */}
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 text-center">
             <div className="text-lg font-bold text-white/70 font-mono tracking-wider">
               {speedKmh} <span className="text-xs text-white/40">km/h</span>
             </div>
+            <div className="text-[10px] font-mono text-white/40 mt-0.5">
+              ALT {Math.floor(player.pos.y)}
+            </div>
           </div>
+
+          {/* Altitude warning — PULL UP */}
+          {player.pos.y < 30 && (
+            <div
+              className="absolute z-10 left-1/2 -translate-x-1/2"
+              style={{ bottom: 80 }}
+            >
+              <div
+                className="text-xl font-black font-mono tracking-widest"
+                style={{
+                  color: '#ff3300',
+                  textShadow: '0 0 20px rgba(255,51,0,0.8), 0 0 40px rgba(255,51,0,0.4)',
+                  animation: 'pullUpFlash 0.4s ease-in-out infinite alternate',
+                }}
+              >
+                ⚠ PULL UP ⚠
+              </div>
+              <style>{`
+                @keyframes pullUpFlash {
+                  0% { opacity: 1; }
+                  100% { opacity: 0.2; }
+                }
+              `}</style>
+            </div>
+          )}
         </>
       )}
 

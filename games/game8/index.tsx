@@ -12,10 +12,11 @@ const CFG = {
   PLANE_X_RATIO: 0.25,         // plane at 25% from left
   PLANE_W: 30,
   PLANE_H: 15,
-  GRAVITY: 0.15,
-  TILT_FORCE: -0.08,
-  BOOST_FORCE: -0.12,
-  MAX_VY: 6,
+  GRAVITY: 0.12,               // gentle gravity pull
+  TILT_FORCE: 0.35,            // tilt-forward → climb (positive = up after sign flip)
+  BOOST_FORCE: -0.4,           // boost pushes plane upward (negative = up on screen)
+  MAX_VY: 5,
+  INPUT_SCALE: 15,             // platform input.move ranges -15..+15; divide to get -1..+1
   INITIAL_SCROLL_SPEED: 2.5,
   MAX_SCROLL_SPEED: 7,
   SPEED_RAMP: 0.0008,          // per frame
@@ -236,14 +237,16 @@ function useGameLogic(
 
       // ── Game update ──
       if (s.status === 'PLAYING' && !paused) {
-        const moveY = input.move.y;
+        // Normalize input: platform sends -15..+15, we need -1..+1
+        const rawY = input.move.y / CFG.INPUT_SCALE;
+        const moveY = Math.max(-1, Math.min(1, rawY));
         const boosting = !!input.actions['boost'];
 
-        // Physics
+        // Physics: positive vy = downward on screen
         let vy = s.planeVY;
-        vy += CFG.GRAVITY;                         // gravity
-        vy += moveY * CFG.TILT_FORCE;              // tilt force (inverted: tilt forward = move.y positive = plane goes up)
-        if (boosting) vy += CFG.BOOST_FORCE;       // boost upward
+        vy += CFG.GRAVITY;                         // gravity pulls plane down (+vy)
+        vy += moveY * -CFG.TILT_FORCE;             // tilt forward (moveY>0) → climb (negative vy)
+        if (boosting) vy += CFG.BOOST_FORCE;       // boost upward (negative vy)
         vy = Math.max(-CFG.MAX_VY, Math.min(CFG.MAX_VY, vy));
 
         let planeY = s.planeY + vy;

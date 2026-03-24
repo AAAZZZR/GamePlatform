@@ -25,7 +25,7 @@ export default function SkeetShooterMobileController({ sendAction }: Props) {
   };
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-none flex items-center justify-between px-12">
+    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-manipulation flex items-center justify-between px-12" style={{ paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
 
       {/* ── PULL button (LEFT) ── */}
       <button
@@ -35,6 +35,7 @@ export default function SkeetShooterMobileController({ sendAction }: Props) {
           flex flex-col items-center justify-center gap-1
           bg-cyan-500/20 border-cyan-400/40
           active:bg-cyan-500/40 active:border-cyan-400/60 active:scale-95
+          touch-none
         `}
         style={{
           boxShadow: '0 0 20px rgba(6,182,212,0.25)',
@@ -60,6 +61,7 @@ export default function SkeetShooterMobileController({ sendAction }: Props) {
           flex flex-col items-center justify-center gap-1
           bg-red-500/20 border-red-400/40
           active:bg-red-500/40 active:border-red-400/60 active:scale-95
+          touch-none
         `}
         style={{
           boxShadow: '0 0 20px rgba(239,68,68,0.25)',

@@ -25,13 +25,14 @@ export default function TunnelRunnerMobileController({ sendAction }: Props) {
   };
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-none flex flex-col items-center justify-center gap-6">
+    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-manipulation flex flex-col items-center justify-center gap-6" style={{ paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
       {/* Boost Button */}
       <button
         className={`
           relative w-36 h-36 rounded-full
           border-4 transition-all duration-75
           flex flex-col items-center justify-center gap-1
+          touch-none
           ${isBoosting
             ? 'bg-orange-500/30 border-orange-400/60 scale-95'
             : 'bg-cyan-500/10 border-cyan-400/30'

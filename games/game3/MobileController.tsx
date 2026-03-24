@@ -10,7 +10,7 @@ interface Props {
 export default function RacingMobileController({ socket, roomId, sendAction }: Props) {
 
     return (
-        <div className="w-full h-full relative overflow-hidden bg-zinc-900 select-none touch-none flex flex-col">
+        <div className="w-full h-full relative overflow-hidden bg-zinc-900 select-none touch-manipulation flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
 
             {/* Top Section: Visual Steering Wheel / Start Button */}
             <div className="flex-1 flex items-center justify-center relative">
@@ -45,6 +45,7 @@ export default function RacingMobileController({ socket, roomId, sendAction }: P
             active:border-b-0 active:translate-y-2
             transition-all
             flex items-center justify-center gap-2
+            touch-none
           "
                     onTouchStart={(e) => { e.preventDefault(); sendAction?.('nitro-start'); if (navigator.vibrate) navigator.vibrate(50); }}
                     onTouchEnd={(e) => { e.preventDefault(); sendAction?.('nitro-end'); }}

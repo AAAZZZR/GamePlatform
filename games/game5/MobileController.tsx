@@ -31,8 +31,8 @@ export default function TiltToLiveMobileController({ socket, roomId, sendAction 
 
   return (
     <div
-      className="w-full h-full relative overflow-hidden select-none touch-none flex flex-col items-center justify-center gap-8"
-      style={{ background: 'radial-gradient(ellipse at center, #0a0e1a 0%, #050510 70%, #020208 100%)' }}
+      className="w-full h-full relative overflow-hidden select-none touch-manipulation flex flex-col items-center justify-center gap-8"
+      style={{ background: 'radial-gradient(ellipse at center, #0a0e1a 0%, #050510 70%, #020208 100%)', paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}
     >
       {/* Subtle grid overlay */}
       <div className="absolute inset-0 pointer-events-none" style={{
@@ -84,6 +84,7 @@ export default function TiltToLiveMobileController({ socket, roomId, sendAction 
               active:scale-90 active:brightness-125
               transition-all duration-75
               flex flex-col items-center justify-center gap-1
+              touch-none
             "
             onTouchStart={handleStart}
             onMouseDown={handleStart}
@@ -104,6 +105,7 @@ export default function TiltToLiveMobileController({ socket, roomId, sendAction 
               active:scale-90 active:brightness-125
               transition-all duration-75
               flex flex-col items-center justify-center gap-1
+              touch-none
             "
             onTouchStart={handleRestart}
             onMouseDown={handleRestart}
@@ -139,7 +141,7 @@ export default function TiltToLiveMobileController({ socket, roomId, sendAction 
       </div>
 
       {/* Bottom hint */}
-      <div className="absolute bottom-5 left-0 right-0 flex justify-center z-10">
+      <div className="absolute bottom-8 left-0 right-0 flex justify-center z-10">
         <div className="text-white/15 text-[10px] font-mono tracking-widest">
           PURE TILT CONTROLS &bull; COLLECT ORBS TO ATTACK
         </div>

@@ -14,8 +14,8 @@ import TiltBall from '@/components/TiltBall';
 function ControllerContent() {
   // Lock body scroll on mobile controller page only
   useEffect(() => {
-    document.documentElement.style.cssText = 'position:fixed;overflow:hidden;overscroll-behavior:none;touch-action:manipulation;width:100%;height:100%';
-    document.body.style.cssText = 'position:fixed;overflow:hidden;overscroll-behavior:none;width:100%;height:100%';
+    document.documentElement.style.cssText = 'overflow:auto;overscroll-behavior:none;touch-action:manipulation;width:100%;height:100%';
+    document.body.style.cssText = 'overflow:auto;overscroll-behavior:none;width:100%;height:100%';
     return () => {
       document.documentElement.style.cssText = '';
       document.body.style.cssText = '';
@@ -89,7 +89,7 @@ function ControllerContent() {
   const CurrentMobileController = GAME_REGISTRY[currentView]?.mobile;
 
   return (
-    <div className={`h-screen w-screen overflow-hidden transition-colors duration-500 ${permissionGranted ? 'bg-slate-900' : 'bg-gray-900'}`}>
+    <div className={`h-screen w-screen overflow-auto transition-colors duration-500 ${permissionGranted ? 'bg-slate-900' : 'bg-gray-900'}`}>
 
       {/* 1. 直屏提示遮罩 (Only show if NOT in Lobby) */}
       {currentView !== 'LOBBY' && (

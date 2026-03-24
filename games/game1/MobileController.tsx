@@ -12,19 +12,20 @@ export default function ShooterMobileController({ socket, roomId, sendAction }: 
   // Only minimal controls here (Fire Button + Hints)
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-none">
+    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-manipulation" style={{ paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
 
       {/* 3. Fire Button */}
       <div className="absolute right-12 top-1/2 -translate-y-1/2 flex items-center justify-center">
         <button
           className="
-            group relative w-32 h-32 md:w-48 md:h-48 rounded-full 
+            group relative w-32 h-32 md:w-48 md:h-48 rounded-full
             bg-gradient-to-br from-red-500 to-red-700
-            border-[6px] border-red-400/50 
-            shadow-[0_0_40px_rgba(239,68,68,0.5)] 
+            border-[6px] border-red-400/50
+            shadow-[0_0_40px_rgba(239,68,68,0.5)]
             active:scale-90 active:brightness-125
             transition-all duration-75
             flex items-center justify-center
+            touch-none
           "
           // Hold to Fire Logic
           onTouchStart={(e) => {

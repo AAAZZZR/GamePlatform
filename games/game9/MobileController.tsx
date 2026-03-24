@@ -35,13 +35,13 @@ export default function SkyFighterMobileController({ sendAction }: Props) {
   };
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-none flex items-center justify-between px-8">
+    <div className="w-full h-full relative overflow-hidden bg-slate-900 select-none touch-manipulation flex items-center justify-between px-8" style={{ paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
 
       {/* ── LEFT: Fire + Brake ── */}
       <div className="flex flex-col items-center gap-4">
         {/* Fire */}
         <button
-          className={`relative w-32 h-32 rounded-full border-4 transition-all duration-75 flex flex-col items-center justify-center gap-0.5
+          className={`relative w-32 h-32 rounded-full border-4 transition-all duration-75 flex flex-col items-center justify-center gap-0.5 touch-none
             ${isFiring ? 'bg-red-500/40 border-red-400/60 scale-95' : 'bg-red-500/20 border-red-400/40'}`}
           style={{ boxShadow: isFiring ? '0 0 35px rgba(239,68,68,0.6)' : '0 0 15px rgba(239,68,68,0.2)' }}
           onTouchStart={fire(true)} onTouchEnd={fire(false)} onTouchCancel={fire(false)}
@@ -54,7 +54,7 @@ export default function SkyFighterMobileController({ sendAction }: Props) {
 
         {/* Brake */}
         <button
-          className={`relative w-24 h-24 rounded-full border-3 transition-all duration-75 flex flex-col items-center justify-center gap-0.5
+          className={`relative w-24 h-24 rounded-full border-3 transition-all duration-75 flex flex-col items-center justify-center gap-0.5 touch-none
             ${isBraking ? 'bg-cyan-500/40 border-cyan-400/60 scale-95' : 'bg-cyan-500/15 border-cyan-400/30'}`}
           style={{ boxShadow: isBraking ? '0 0 25px rgba(34,211,238,0.5)' : '0 0 10px rgba(34,211,238,0.15)' }}
           onTouchStart={brake(true)} onTouchEnd={brake(false)} onTouchCancel={brake(false)}
@@ -70,7 +70,7 @@ export default function SkyFighterMobileController({ sendAction }: Props) {
 
       {/* ── RIGHT: Throttle ── */}
       <button
-        className={`relative w-36 h-36 rounded-full border-4 transition-all duration-75 flex flex-col items-center justify-center gap-1
+        className={`relative w-36 h-36 rounded-full border-4 transition-all duration-75 flex flex-col items-center justify-center gap-1 touch-none
           ${isThrottling ? 'bg-emerald-500/40 border-emerald-400/60 scale-95' : 'bg-emerald-500/20 border-emerald-400/40'}`}
         style={{ boxShadow: isThrottling ? '0 0 40px rgba(52,211,153,0.5)' : '0 0 20px rgba(52,211,153,0.2)' }}
         onTouchStart={throttle(true)} onTouchEnd={throttle(false)} onTouchCancel={throttle(false)}
