@@ -31,7 +31,8 @@
       "Bash(grep:*)",
       "Bash(find /c/Users/Owner/Desktop/gyrogame -type f \\\\\\(-name *sensitivity* -o -name *gyro* -o -name *controller* \\\\\\))",
       "Bash(find /c/Users/Owner/Desktop/gyrogame/platform -type f -name *.ts -o -name *.tsx)",
-      "Bash(find /c/Users/Owner/Desktop/gyrogame -type f \\\\\\(-iname *.png -o -iname *.jpg -o -iname *.jpeg -o -iname *.gif -o -iname *.svg \\\\\\) ! -path */node_modules/* ! -path */.next/* ! -path */.git/*)"
+      "Bash(find /c/Users/Owner/Desktop/gyrogame -type f \\\\\\(-iname *.png -o -iname *.jpg -o -iname *.jpeg -o -iname *.gif -o -iname *.svg \\\\\\) ! -path */node_modules/* ! -path */.next/* ! -path */.git/*)",
+      "Bash(npx rimraf:*)"
     ]
   }
 }

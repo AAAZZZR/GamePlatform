@@ -191,13 +191,31 @@ function spawnEnemy(playerPos: Vec3, playerOrientation: Quat, phase: number): En
     };
   }
 
-  const hp = phase >= 5 ? 55 : CFG.ENEMY_HP;
+  // Phase-dependent HP: phase 1 = 1-hit kill, scaling up
+  const hp = phase <= 1 ? CFG.BULLET_DAMAGE
+           : phase === 2 ? CFG.BULLET_DAMAGE * 2
+           : phase === 3 ? CFG.BULLET_DAMAGE * 3
+           : phase === 4 ? CFG.ENEMY_HP
+           : 55;
+
+  // Phase-dependent speed: phase 1 = slow & easy, scaling up
+  const speed = phase <= 1 ? 0.8
+              : phase === 2 ? 1.0
+              : phase === 3 ? 1.3
+              : phase === 4 ? 1.3
+              : 1.8;
+
+  // Phase-dependent burst cooldown: phase 1 = very long pauses
+  const cooldown = phase <= 1 ? CFG.ENEMY_BURST_CD_MAX * 2
+                 : phase === 2 ? CFG.ENEMY_BURST_CD_MAX * 1.5
+                 : phase >= 5  ? CFG.ENEMY_BURST_CD_MIN
+                 : CFG.ENEMY_BURST_CD_MAX;
 
   return {
     id: nid(),
     pos: spawnPos,
     orientation: { w: 1, x: 0, y: 0, z: 0 },
-    speed: phase >= 5 ? 1.8 : 1.3,
+    speed,
     hp,
     maxHp: hp,
     state: 'PATROL',
@@ -206,7 +224,7 @@ function spawnEnemy(playerPos: Vec3, playerOrientation: Quat, phase: number): En
     fireTimer: 0,
     burstCount: 0,
     burstRemaining: 0,
-    cooldownTimer: phase >= 5 ? CFG.ENEMY_BURST_CD_MIN : CFG.ENEMY_BURST_CD_MAX,
+    cooldownTimer: cooldown,
     flashTimer: 0,
   };
 }
@@ -490,7 +508,12 @@ function useGameLogic(
               break;
             }
             case 'CHASE': {
-              const turnRate = phase >= 5 ? CFG.ENEMY_TURN_RATE * 1.3 : CFG.ENEMY_TURN_RATE;
+              // Phase-dependent turn rate: phase 1 = sluggish, scaling up
+              const turnRate = phase <= 1 ? CFG.ENEMY_TURN_RATE * 0.35
+                             : phase === 2 ? CFG.ENEMY_TURN_RATE * 0.6
+                             : phase === 3 ? CFG.ENEMY_TURN_RATE * 0.85
+                             : phase >= 5  ? CFG.ENEMY_TURN_RATE * 1.3
+                             : CFG.ENEMY_TURN_RATE;
               steerEnemy(e, newPos, turnRate, dt, _eQ, _eQDelta, _eFwd, _eV3, _toTarget);
 
               // Check fire angle
@@ -512,8 +535,13 @@ function useGameLogic(
                 if (e.fireTimer <= 0) {
                   e.fireTimer = 6;
                   e.burstRemaining--;
-                  // Fire bullet with spread
-                  const spread = CFG.ENEMY_BULLET_SPREAD * (phase >= 5 ? 0.6 : 1);
+                  // Fire bullet with spread (phase 1 = very inaccurate)
+                  const spread = CFG.ENEMY_BULLET_SPREAD * (
+                    phase <= 1 ? 2.0
+                    : phase === 2 ? 1.5
+                    : phase >= 5 ? 0.6
+                    : 1
+                  );
                   const bDir = _eFwd.clone();
                   bDir.x += (Math.random() - 0.5) * spread;
                   bDir.y += (Math.random() - 0.5) * spread;
@@ -799,12 +827,19 @@ function PlayerJet({ playerRef }: { playerRef: MutableRefObject<GameState['playe
 }
 
 // ─── Enemy Jet ───
-function EnemyJet({ enemiesRef, index }: { enemiesRef: MutableRefObject<Enemy[]>; index: number }) {
+function EnemyJet({ enemiesRef, playerRef, index }: {
+  enemiesRef: MutableRefObject<Enemy[]>;
+  playerRef: MutableRefObject<GameState['player']>;
+  index: number;
+}) {
   const meshRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Mesh>(null);
+  const hpBarRef = useRef<THREE.Mesh>(null);
+  const hpBgRef = useRef<THREE.Mesh>(null);
+  const hpGroupRef = useRef<THREE.Group>(null);
   const flashRef = useRef(0);
 
-  useFrame(() => {
+  useFrame(({ camera }) => {
     if (!meshRef.current) return;
     const enemies = enemiesRef.current;
     if (index >= enemies.length) {
@@ -825,10 +860,54 @@ function EnemyJet({ enemiesRef, index }: { enemiesRef: MutableRefObject<Enemy[]>
         mat.color.set('#ff3300');
       }
     }
+
+    // HP bar: billboard toward camera, scale by HP ratio, color by health
+    if (hpBarRef.current && hpBgRef.current && hpGroupRef.current) {
+      const player = playerRef.current;
+      const dist = v3len(e.pos, player.pos);
+
+      // Only show HP bar within 250 units
+      const showBar = dist < 250;
+      hpGroupRef.current.visible = showBar;
+
+      if (showBar) {
+        // Billboard: make HP bar face the camera (in world space)
+        hpGroupRef.current.quaternion.copy(camera.quaternion);
+
+        const hpRatio = e.hp / e.maxHp;
+        // Scale the green bar width by HP ratio
+        hpBarRef.current.scale.set(hpRatio, 1, 1);
+        // Shift it left so it shrinks from right side
+        hpBarRef.current.position.x = -(1 - hpRatio) * 1;
+
+        // Color: green > yellow > red
+        const barMat = hpBarRef.current.material as THREE.MeshBasicMaterial;
+        if (hpRatio > 0.6) {
+          barMat.color.set('#00ff66');
+        } else if (hpRatio > 0.3) {
+          barMat.color.set('#ffcc00');
+        } else {
+          barMat.color.set('#ff3300');
+        }
+      }
+    }
   });
 
   return (
     <group ref={meshRef}>
+      {/* HP bar — floats above the jet, billboards toward camera */}
+      <group ref={hpGroupRef} position={[0, 2.5, 0]}>
+        {/* Background (dark) */}
+        <mesh ref={hpBgRef}>
+          <planeGeometry args={[2, 0.22]} />
+          <meshBasicMaterial color="#333333" transparent opacity={0.6} depthTest={false} />
+        </mesh>
+        {/* Foreground (HP fill) */}
+        <mesh ref={hpBarRef} position={[0, 0, 0.01]}>
+          <planeGeometry args={[2, 0.18]} />
+          <meshBasicMaterial color="#00ff66" depthTest={false} />
+        </mesh>
+      </group>
       {/* Fuselage */}
       <mesh ref={bodyRef} rotation={[Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.5, 3.5, 6]} />
@@ -1108,9 +1187,9 @@ function Scene({
       )}
 
       {/* Up to 3 enemy slots */}
-      <EnemyJet enemiesRef={enemiesRef} index={0} />
-      <EnemyJet enemiesRef={enemiesRef} index={1} />
-      <EnemyJet enemiesRef={enemiesRef} index={2} />
+      <EnemyJet enemiesRef={enemiesRef} playerRef={playerRef} index={0} />
+      <EnemyJet enemiesRef={enemiesRef} playerRef={playerRef} index={1} />
+      <EnemyJet enemiesRef={enemiesRef} playerRef={playerRef} index={2} />
 
       <BulletMeshes bulletsRef={bulletsRef} />
       <ExplosionParticles explosionsRef={explosionsRef} />

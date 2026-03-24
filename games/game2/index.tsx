@@ -13,7 +13,7 @@ const GAME_CONFIG = {
   PADDLE_Y: 555,
   PADDLE_SPEED: 14,
   BALL_SIZE: 14,
-  BALL_SPEED: 4,
+  BALL_SPEED: 2.5,           // slower base speed (was 4)
   BRICK_ROWS: 5,
   BRICK_COLS: 10,
   BRICK_HEIGHT: 28,
@@ -28,7 +28,60 @@ const BRICK_COLORS = [
   { fill: '#eab308', glow: 'rgba(234,179,8,0.7)' },   // row 2 - yellow
   { fill: '#22c55e', glow: 'rgba(34,197,94,0.7)' },   // row 3 - green
   { fill: '#6366f1', glow: 'rgba(99,102,241,0.7)' },  // row 4 - indigo
+  { fill: '#ec4899', glow: 'rgba(236,72,153,0.7)' },  // row 5 - pink
+  { fill: '#14b8a6', glow: 'rgba(20,184,166,0.7)' },  // row 6 - teal
+  { fill: '#8b5cf6', glow: 'rgba(139,92,246,0.7)' },  // row 7 - violet
 ];
+
+// Per-level config for progressive difficulty
+interface LevelConfig {
+  rows: number;
+  cols: number;
+  paddleWidth: number;
+  speedMult: number;
+  powerUpChance: number;
+  layout: 'easy' | 'grid' | 'diamond' | 'checkerboard' | 'pyramid' | 'fortress';
+  maxHp: number;
+  hpRows: number[];  // which rows get multi-hp bricks
+}
+
+function getLevelConfig(level: number): LevelConfig {
+  switch (level) {
+    case 1:
+      return { rows: 3, cols: 8, paddleWidth: 160, speedMult: 1.0, powerUpChance: 0.35,
+               layout: 'easy', maxHp: 1, hpRows: [] };
+    case 2:
+      return { rows: 4, cols: 9, paddleWidth: 150, speedMult: 1.08, powerUpChance: 0.30,
+               layout: 'diamond', maxHp: 1, hpRows: [] };
+    case 3:
+      return { rows: 4, cols: 10, paddleWidth: 140, speedMult: 1.16, powerUpChance: 0.25,
+               layout: 'checkerboard', maxHp: 2, hpRows: [0] };
+    case 4:
+      return { rows: 5, cols: 10, paddleWidth: 130, speedMult: 1.24, powerUpChance: 0.22,
+               layout: 'pyramid', maxHp: 2, hpRows: [0, 1] };
+    case 5:
+      return { rows: 5, cols: 10, paddleWidth: 125, speedMult: 1.32, powerUpChance: 0.20,
+               layout: 'fortress', maxHp: 3, hpRows: [0, 1, 2] };
+    default: {
+      const l = Math.min(level, 12);
+      return {
+        rows: Math.min(5 + Math.floor((l - 5) / 2), 8),
+        cols: 10,
+        paddleWidth: Math.max(100, 125 - (l - 5) * 4),
+        speedMult: 1.32 + (l - 5) * 0.1,
+        powerUpChance: Math.max(0.12, 0.20 - (l - 5) * 0.015),
+        layout: (['grid', 'diamond', 'checkerboard', 'pyramid', 'fortress'] as const)[(l - 1) % 5],
+        maxHp: Math.min(3, 2 + Math.floor((l - 5) / 3)),
+        hpRows: Array.from({ length: Math.min(l - 3, 5) }, (_, i) => i),
+      };
+    }
+  }
+}
+
+interface Particle {
+  id: string; x: number; y: number; vx: number; vy: number;
+  life: number; color: string; size: number;
+}
 
 interface Brick {
   id: string; x: number; y: number; width: number; height: number;
@@ -40,7 +93,7 @@ interface Ball {
 }
 interface PowerUp {
   id: string; x: number; y: number; active: boolean;
-  type: 'WIDE' | 'MULTIBALL' | 'FIREBALL' | 'FAST';
+  type: 'WIDE' | 'MULTIBALL' | 'FIREBALL' | 'SLOW';
 }
 interface HitFlash { id: string; x: number; y: number; life: number; }
 
@@ -51,6 +104,7 @@ interface GameState {
   bricks: Brick[];
   powerUps: PowerUp[];
   hitFlashes: HitFlash[];
+  particles: Particle[];
   status: 'READY' | 'PLAYING' | 'GAME_OVER' | 'VICTORY';
   score: number;
   level: number;
@@ -58,15 +112,45 @@ interface GameState {
 }
 
 function createBricksForLevel(level: number): Brick[] {
+  const cfg = getLevelConfig(level);
   const bricks: Brick[] = [];
   const totalW = GAME_CONFIG.WIDTH;
-  const brickW = (totalW - (GAME_CONFIG.BRICK_COLS + 1) * GAME_CONFIG.BRICK_GAP) / GAME_CONFIG.BRICK_COLS;
-  const rows = Math.min(GAME_CONFIG.BRICK_ROWS + Math.floor(level / 2), 8);
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < GAME_CONFIG.BRICK_COLS; c++) {
-      // Some bricks are skipped for pattern variety on higher levels
-      if (level > 1 && Math.random() < 0.1) continue;
-      const hp = r === 0 && level > 2 ? 2 : 1;
+  const brickW = (totalW - (cfg.cols + 1) * GAME_CONFIG.BRICK_GAP) / cfg.cols;
+
+  // Helper to decide whether a brick exists in the given layout
+  const shouldPlace = (r: number, c: number): boolean => {
+    switch (cfg.layout) {
+      case 'easy':
+        // Only the center portion, with gaps — very few bricks
+        return c >= 1 && c <= cfg.cols - 2 && (c + r) % 2 === 0;
+      case 'diamond': {
+        const midR = (cfg.rows - 1) / 2;
+        const midC = (cfg.cols - 1) / 2;
+        const dist = Math.abs(r - midR) / cfg.rows + Math.abs(c - midC) / cfg.cols;
+        return dist < 0.45;
+      }
+      case 'checkerboard':
+        return (r + c) % 2 === 0;
+      case 'pyramid':
+        // Each row narrows toward the top
+        const margin = r;
+        return c >= margin && c < cfg.cols - margin;
+      case 'fortress':
+        // Outer walls plus a center block
+        if (r === 0 || r === cfg.rows - 1) return true;
+        if (c === 0 || c === cfg.cols - 1) return true;
+        if (r >= 1 && r <= 2 && c >= 3 && c <= 6) return true;
+        return false;
+      case 'grid':
+      default:
+        return true;
+    }
+  };
+
+  for (let r = 0; r < cfg.rows; r++) {
+    for (let c = 0; c < cfg.cols; c++) {
+      if (!shouldPlace(r, c)) continue;
+      const hp = cfg.hpRows.includes(r) ? cfg.maxHp : 1;
       bricks.push({
         id: uuidv4(),
         x: GAME_CONFIG.BRICK_GAP + c * (brickW + GAME_CONFIG.BRICK_GAP),
@@ -85,7 +169,7 @@ function createBricksForLevel(level: number): Brick[] {
 function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boolean = false) {
   const getInitialState = (level = 1): GameState => ({
     paddleX: GAME_CONFIG.WIDTH / 2,
-    paddleWidth: GAME_CONFIG.PADDLE_WIDTH,
+    paddleWidth: getLevelConfig(level).paddleWidth,
     balls: [{
       id: 'ball-0',
       x: GAME_CONFIG.WIDTH / 2,
@@ -96,6 +180,7 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
     bricks: createBricksForLevel(level),
     powerUps: [],
     hitFlashes: [],
+    particles: [],
     status: 'READY',
     score: 0,
     level,
@@ -132,7 +217,8 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
     const loop = () => {
       if (stateRef.current.status === 'PLAYING' && !paused) {
         const current = stateRef.current;
-        const levelSpeedBonus = 1 + (current.level - 1) * 0.15;
+        const lvlCfg = getLevelConfig(current.level);
+        const levelSpeedBonus = lvlCfg.speedMult;
 
         // Paddle movement (uses platform normalized input)
         let newPaddleX = current.paddleX + inputRef.current.move.x;
@@ -174,11 +260,26 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
         const newBricks = [...current.bricks];
         const newPowerUps = [...current.powerUps];
         const newFlashes = [...current.hitFlashes];
+        const newParticles = [...current.particles];
         let scoreAdd = 0;
 
-        for (let ball of newBalls) {
+        const spawnParticles = (bx: number, by: number, row: number) => {
+          const color = BRICK_COLORS[row % BRICK_COLORS.length].fill;
+          for (let i = 0; i < 8; i++) {
+            const angle = (Math.PI * 2 * i) / 8 + (Math.random() - 0.5) * 0.5;
+            const speed = 1.5 + Math.random() * 2.5;
+            newParticles.push({
+              id: uuidv4(), x: bx, y: by,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              life: 1.0, color, size: 3 + Math.random() * 3
+            });
+          }
+        };
+
+        for (const ball of newBalls) {
           if (!ball.active) continue;
-          for (let b of newBricks) {
+          for (const b of newBricks) {
             if (!b.active) continue;
             if (ball.x >= b.x && ball.x <= b.x + b.width &&
               ball.y >= b.y && ball.y <= b.y + b.height) {
@@ -186,15 +287,17 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
                 b.active = false;
                 scoreAdd += GAME_CONFIG.SCORE_PER_BRICK;
                 sfx.brickBreak(b.row);
+                spawnParticles(b.x + b.width / 2, b.y + b.height / 2, b.row);
               } else {
                 b.hp--;
                 if (b.hp <= 0) {
                   b.active = false;
                   scoreAdd += GAME_CONFIG.SCORE_PER_BRICK;
                   sfx.brickBreak(b.row);
-                  // Spawn power-up 20% chance
-                  if (Math.random() < 0.2) {
-                    const types: PowerUp['type'][] = ['WIDE', 'MULTIBALL', 'FIREBALL', 'FAST'];
+                  spawnParticles(b.x + b.width / 2, b.y + b.height / 2, b.row);
+                  // Spawn power-up (chance varies by level)
+                  if (Math.random() < lvlCfg.powerUpChance) {
+                    const types: PowerUp['type'][] = ['WIDE', 'MULTIBALL', 'FIREBALL', 'SLOW'];
                     newPowerUps.push({
                       id: uuidv4(),
                       x: b.x + b.width / 2,
@@ -242,12 +345,31 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
                   balls: prev.balls.map(b => ({ ...b, fireball: false }))
                 }));
               }, 5000);
+            } else if (p.type === 'SLOW') {
+              // Temporarily halve ball speed
+              for (const b of newBalls) {
+                if (b.active) { b.vx *= 0.5; b.vy *= 0.5; }
+              }
+              setTimeout(() => {
+                setGameState(prev => ({
+                  ...prev,
+                  balls: prev.balls.map(b => ({ ...b, vx: b.vx * 2, vy: b.vy * 2 }))
+                }));
+              }, 6000);
             }
           }
         }
 
         // Age hit flashes
         for (const f of newFlashes) { f.life -= 0.1; }
+
+        // Age & move particles
+        for (const p of newParticles) {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vy += 0.05; // gravity
+          p.life -= 0.03;
+        }
 
         // Game over if all balls dead
         const anyBallActive = newBalls.some(b => b.active);
@@ -265,7 +387,7 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
           newLevel = current.level + 1;
           sfx.levelUp();
           nextBricks = createBricksForLevel(newLevel);
-          nextPaddleWidth = GAME_CONFIG.PADDLE_WIDTH; // reset paddle
+          nextPaddleWidth = getLevelConfig(newLevel).paddleWidth; // level-based paddle
           newStatus = 'READY';
         }
 
@@ -276,7 +398,7 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
           nextPaddleWidth = Math.min(240, current.paddleWidth + 40);
           if (paddleWidthTimeoutRef.current) clearTimeout(paddleWidthTimeoutRef.current);
           paddleWidthTimeoutRef.current = setTimeout(() => {
-            setGameState(prev => ({ ...prev, paddleWidth: GAME_CONFIG.PADDLE_WIDTH }));
+            setGameState(prev => ({ ...prev, paddleWidth: getLevelConfig(prev.level).paddleWidth }));
           }, 8000);
         }
 
@@ -288,6 +410,7 @@ function useGameLogic(inputRef: MutableRefObject<NormalizedInput>, paused: boole
           bricks: nextBricks,
           powerUps: newPowerUps.filter(p => p.active),
           hitFlashes: newFlashes.filter(f => f.life > 0),
+          particles: newParticles.filter(p => p.life > 0),
           score: prev.score + scoreAdd,
           status: newStatus,
           level: newLevel
@@ -318,7 +441,7 @@ interface Props {
 
 export default function Game2({ inputRef, socket, roomId, paused = false, onPause, onResume, onScoreChange, onStatusChange }: Props) {
   const { gameState, launchBall, resetGame } = useGameLogic(inputRef, paused);
-  const { paddleX, paddleWidth, balls, bricks, powerUps, hitFlashes, status, score, level } = gameState;
+  const { paddleX, paddleWidth, balls, bricks, powerUps, hitFlashes, particles, status, score, level } = gameState;
 
   useEffect(() => { if (onScoreChange) onScoreChange(score); }, [score, onScoreChange]);
   useEffect(() => { if (onStatusChange) onStatusChange(status); }, [status, onStatusChange]);
@@ -338,13 +461,11 @@ export default function Game2({ inputRef, socket, roomId, paused = false, onPaus
     };
   }, [socket, roomId, launchBall, resetGame, status, onPause, onResume]);
 
-  const brickW = (GAME_CONFIG.WIDTH - (GAME_CONFIG.BRICK_COLS + 1) * GAME_CONFIG.BRICK_GAP) / GAME_CONFIG.BRICK_COLS;
-
   const powerUpColors: Record<PowerUp['type'], string> = {
-    WIDE: '#22d3ee', MULTIBALL: '#a855f7', FIREBALL: '#f97316', FAST: '#facc15'
+    WIDE: '#22d3ee', MULTIBALL: '#a855f7', FIREBALL: '#f97316', SLOW: '#38bdf8'
   };
   const powerUpLabels: Record<PowerUp['type'], string> = {
-    WIDE: '↔', MULTIBALL: '✦', FIREBALL: '🔥', FAST: '⚡'
+    WIDE: '↔', MULTIBALL: '✦', FIREBALL: '🔥', SLOW: '❄'
   };
 
   return (
@@ -363,16 +484,21 @@ export default function Game2({ inputRef, socket, roomId, paused = false, onPaus
 
         {/* Bricks */}
         {bricks.map(b => b.active && (
-          <div key={b.id} className="absolute rounded-sm overflow-hidden transition-all duration-100"
+          <div key={b.id} className="absolute rounded-sm overflow-hidden"
             style={{
               left: b.x, top: b.y,
               width: b.width, height: b.height,
               background: BRICK_COLORS[b.row % BRICK_COLORS.length].fill,
-              boxShadow: `0 0 8px ${BRICK_COLORS[b.row % BRICK_COLORS.length].glow}, inset 0 2px 4px rgba(255,255,255,0.3)`,
-              opacity: b.hp > 1 ? 1 : 1
+              boxShadow: `0 0 ${b.hp > 1 ? 12 : 8}px ${BRICK_COLORS[b.row % BRICK_COLORS.length].glow}, inset 0 2px 4px rgba(255,255,255,0.3)`,
+              border: b.hp >= 3 ? '2px solid rgba(255,255,255,0.6)' : b.hp === 2 ? '1px solid rgba(255,255,255,0.35)' : 'none',
             }}>
-            {b.hp > 1 && <div className="absolute inset-0 bg-black/30 flex items-center justify-center text-white text-xs font-bold">●</div>}
-            <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.2) 0%, transparent 50%)' }} />
+            {b.hp > 1 && (
+              <div className="absolute inset-0 flex items-center justify-center text-white font-bold"
+                style={{ fontSize: 11, textShadow: '0 0 4px rgba(0,0,0,0.8)' }}>
+                {b.hp}
+              </div>
+            )}
+            <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.25) 0%, transparent 50%)' }} />
           </div>
         ))}
 
@@ -385,6 +511,18 @@ export default function Game2({ inputRef, socket, roomId, paused = false, onPaus
               background: 'radial-gradient(circle, rgba(255,255,255,0.8), transparent)',
               opacity: f.life,
               transform: `scale(${2 - f.life})`
+            }} />
+        ))}
+
+        {/* Particles */}
+        {particles.map(p => (
+          <div key={p.id} className="absolute rounded-full pointer-events-none"
+            style={{
+              width: p.size, height: p.size,
+              left: p.x - p.size / 2, top: p.y - p.size / 2,
+              backgroundColor: p.color,
+              opacity: p.life,
+              boxShadow: `0 0 ${p.size + 2}px ${p.color}`,
             }} />
         ))}
 

@@ -416,7 +416,7 @@ function useGameLogic(
 
         let yaw = s.yaw - smoothed.x * CFG.YAW_SENSITIVITY * 0.03 * dt;
         yaw = clamp(yaw, -Math.PI / 2, Math.PI / 2);
-        let pitch = s.pitch - smoothed.y * CFG.PITCH_SENSITIVITY * 0.03 * dt;
+        let pitch = s.pitch + smoothed.y * CFG.PITCH_SENSITIVITY * 0.03 * dt;
         pitch = clamp(pitch, CFG.PITCH_MIN, CFG.PITCH_MAX);
 
         // ─── Update disc physics ───
