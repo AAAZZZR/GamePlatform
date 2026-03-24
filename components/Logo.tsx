@@ -1,4 +1,4 @@
-// components/Logo.tsx — GyroArcade Logo
+// components/Logo.tsx — GyroPlay Logo
 import React from 'react';
 
 interface LogoProps {
@@ -18,116 +18,76 @@ export default function Logo({ size = 64, className = '', animate = true }: Logo
       className={className}
     >
       <defs>
-        {/* Main gradient: cyan → blue → violet */}
-        <linearGradient id="logo-grad-main" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+        <linearGradient id="gp-ring1" x1="10" y1="10" x2="110" y2="110" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#22d3ee" />
+          <stop offset="100%" stopColor="#3b82f6" />
+        </linearGradient>
+        <linearGradient id="gp-ring2" x1="110" y1="10" x2="10" y2="110" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#6366f1" />
+          <stop offset="100%" stopColor="#06b6d4" />
+        </linearGradient>
+        <linearGradient id="gp-play" x1="48" y1="35" x2="82" y2="85" gradientUnits="userSpaceOnUse">
           <stop offset="0%" stopColor="#22d3ee" />
           <stop offset="50%" stopColor="#3b82f6" />
           <stop offset="100%" stopColor="#8b5cf6" />
         </linearGradient>
-
-        {/* Secondary gradient for inner ring */}
-        <linearGradient id="logo-grad-inner" x1="120" y1="0" x2="0" y2="120" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#06b6d4" />
-          <stop offset="100%" stopColor="#a855f7" />
-        </linearGradient>
-
-        {/* Glow filter */}
-        <filter id="logo-glow" x="-20%" y="-20%" width="140%" height="140%">
-          <feGaussianBlur stdDeviation="3" result="blur" />
+        <filter id="gp-glow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="2.5" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
+        <filter id="gp-shadow" x="-10%" y="-10%" width="120%" height="120%">
+          <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#0ea5e9" floodOpacity="0.3" />
+        </filter>
       </defs>
 
-      {/* Outer gyroscope ring 1 — horizontal */}
+      {/* Outer circle border */}
+      <circle cx="60" cy="60" r="56" stroke="url(#gp-ring1)" strokeWidth="2" opacity="0.25" />
+
+      {/* Gyroscope ring 1 — horizontal orbit */}
       <ellipse
-        cx="60" cy="60" rx="50" ry="20"
-        stroke="url(#logo-grad-main)"
-        strokeWidth="3"
-        opacity="0.7"
-        filter="url(#logo-glow)"
+        cx="60" cy="60" rx="44" ry="16"
+        stroke="url(#gp-ring1)" strokeWidth="2.5" strokeLinecap="round"
+        opacity="0.8" filter="url(#gp-glow)"
       >
         {animate && (
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            values="0 60 60;360 60 60"
-            dur="12s"
-            repeatCount="indefinite"
-          />
+          <animateTransform attributeName="transform" type="rotate"
+            values="0 60 60;360 60 60" dur="10s" repeatCount="indefinite" />
         )}
       </ellipse>
 
-      {/* Outer gyroscope ring 2 — tilted 60° */}
+      {/* Gyroscope ring 2 — tilted 70° */}
       <ellipse
-        cx="60" cy="60" rx="50" ry="20"
-        stroke="url(#logo-grad-inner)"
-        strokeWidth="3"
-        opacity="0.6"
-        transform="rotate(60 60 60)"
-        filter="url(#logo-glow)"
+        cx="60" cy="60" rx="44" ry="16"
+        stroke="url(#gp-ring2)" strokeWidth="2.5" strokeLinecap="round"
+        opacity="0.65" transform="rotate(70 60 60)" filter="url(#gp-glow)"
       >
         {animate && (
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            values="60 60 60;420 60 60"
-            dur="16s"
-            repeatCount="indefinite"
-          />
+          <animateTransform attributeName="transform" type="rotate"
+            values="70 60 60;430 60 60" dur="14s" repeatCount="indefinite" />
         )}
       </ellipse>
 
-      {/* Outer gyroscope ring 3 — tilted 120° */}
-      <ellipse
-        cx="60" cy="60" rx="50" ry="20"
-        stroke="url(#logo-grad-main)"
-        strokeWidth="2.5"
-        opacity="0.5"
-        transform="rotate(120 60 60)"
-        filter="url(#logo-glow)"
-      >
-        {animate && (
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            values="120 60 60;480 60 60"
-            dur="20s"
-            repeatCount="indefinite"
-          />
-        )}
-      </ellipse>
-
-      {/* Center play-arrow (pointing up-right, symbolizing direction control) */}
-      <g filter="url(#logo-glow)">
-        <polygon
-          points="50,38 78,60 50,82"
-          fill="url(#logo-grad-main)"
-          opacity="0.95"
-        />
-        {/* Arrow inner highlight */}
-        <polygon
-          points="54,44 72,60 54,76"
-          fill="white"
-          opacity="0.25"
-        />
+      {/* Play triangle — centered, clean */}
+      <g filter="url(#gp-shadow)">
+        <polygon points="49,38 80,60 49,82" fill="url(#gp-play)" />
+        <polygon points="53,43 74,60 53,77" fill="white" opacity="0.2" />
       </g>
 
-      {/* Center dot (axis point) */}
-      <circle
-        cx="60" cy="60" r="4"
-        fill="white"
-        opacity="0.9"
-      >
+      {/* Center axis dot */}
+      <circle cx="60" cy="60" r="3" fill="white" opacity="0.9">
         {animate && (
-          <animate
-            attributeName="opacity"
-            values="0.9;0.4;0.9"
-            dur="2s"
-            repeatCount="indefinite"
-          />
+          <animate attributeName="opacity" values="0.9;0.5;0.9" dur="2.5s" repeatCount="indefinite" />
+        )}
+      </circle>
+
+      {/* Tiny orbit dots on rings */}
+      <circle cx="60" cy="60" r="2" fill="#22d3ee" opacity="0.8">
+        {animate && (
+          <animateMotion dur="10s" repeatCount="indefinite"
+            path="M44,0 A44,16 0 1,1 -44,0 A44,16 0 1,1 44,0" />
         )}
       </circle>
     </svg>
