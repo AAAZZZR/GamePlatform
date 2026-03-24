@@ -20,11 +20,11 @@ const CFG = {
   INITIAL_SCROLL_SPEED: 2.5,
   MAX_SCROLL_SPEED: 7,
   SPEED_RAMP: 0.0008,          // per frame
-  OBSTACLE_SPACING_MIN: 300,
-  OBSTACLE_SPACING_MAX: 400,
-  GAP_INITIAL: 200,
-  GAP_MIN: 120,
-  GAP_SHRINK_RATE: 0.3,        // per obstacle spawned
+  OBSTACLE_SPACING_MIN: 600,
+  OBSTACLE_SPACING_MAX: 800,
+  GAP_INITIAL: 400,
+  GAP_MIN: 240,
+  GAP_SHRINK_RATE: 0.15,       // per obstacle spawned (halved for gentler ramp)
   WALL_WIDTH: 60,
   STAR_SCORE: 50,
   STAR_SIZE: 18,

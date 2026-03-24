@@ -40,7 +40,7 @@ const CFG = {
   PERFECT_BONUS: 500,
   EARLY_THRESHOLD: 0.4,
   // Muzzle flash
-  MUZZLE_DURATION: 80,
+  MUZZLE_DURATION: 150,
   // Launcher positions
   LAUNCHERS: [
     { x: -15, y: 0, z: -30 },
@@ -472,8 +472,8 @@ function useGameLogic(
         let tracer = s.tracer;
         let hitFeedback = s.hitFeedback;
 
-        // Expire tracer after 150ms
-        if (tracer.active && (nowMs - tracer.startTime) > 150) {
+        // Expire tracer after 300ms
+        if (tracer.active && (nowMs - tracer.startTime) > 300) {
           tracer = { ...tracer, active: false };
         }
         // Expire hit feedback after 600ms
@@ -935,17 +935,17 @@ function MuzzleFlash({ muzzleRef, yawRef, pitchRef }: {
   return (
     <>
       {/* Bright core */}
-      <mesh ref={coreRef} visible={false}>
-        <sphereGeometry args={[0.5, 8, 8]} />
-        <meshBasicMaterial color="#ffffff" transparent opacity={0.95} />
+      <mesh ref={coreRef} visible={false} renderOrder={999}>
+        <sphereGeometry args={[0.6, 8, 8]} />
+        <meshBasicMaterial color="#ffffff" transparent opacity={0.95} depthTest={false} />
       </mesh>
       {/* Outer glow */}
-      <mesh ref={glowRef} visible={false}>
-        <sphereGeometry args={[1.0, 8, 8]} />
-        <meshBasicMaterial color="#ffaa33" transparent opacity={0.5} />
+      <mesh ref={glowRef} visible={false} renderOrder={998}>
+        <sphereGeometry args={[1.2, 8, 8]} />
+        <meshBasicMaterial color="#ffaa33" transparent opacity={0.6} depthTest={false} />
       </mesh>
       {/* Point light for flash illumination */}
-      <pointLight ref={lightRef} color="#ffcc66" intensity={3} distance={15} visible={false} />
+      <pointLight ref={lightRef} color="#ffcc66" intensity={5} distance={20} visible={false} />
     </>
   );
 }
@@ -962,12 +962,12 @@ function ShotTracer({ tracerRef }: { tracerRef: MutableRefObject<TracerState> })
     if (!meshRef.current || !matRef.current) return;
 
     if (t.active) {
-      const elapsed = (Date.now() - t.startTime) / 150; // 0..1 over 150ms
+      const elapsed = (Date.now() - t.startTime) / 300; // 0..1 over 300ms
       const opacity = 1.0 - elapsed;
 
-      // Tracer extends from 2 units in front of camera to 60 units out
+      // Tracer extends from 1.5 units in front of camera to 60 units out
       const tracerLen = 58;
-      const midDist = 2 + tracerLen / 2;
+      const midDist = 1.5 + tracerLen / 2;
 
       const mx = t.origin.x + t.direction.x * midDist;
       const my = t.origin.y + t.direction.y * midDist - 0.3;
@@ -984,7 +984,6 @@ function ShotTracer({ tracerRef }: { tracerRef: MutableRefObject<TracerState> })
       meshRef.current.lookAt(_lookAt);
       meshRef.current.rotateX(Math.PI / 2);
 
-      // Scale: thin radius (0.03), length = tracerLen
       meshRef.current.scale.set(1, tracerLen, 1);
 
       matRef.current.opacity = Math.max(0, opacity);
@@ -995,9 +994,9 @@ function ShotTracer({ tracerRef }: { tracerRef: MutableRefObject<TracerState> })
   });
 
   return (
-    <mesh ref={meshRef} visible={false}>
-      <cylinderGeometry args={[0.03, 0.03, 1, 4]} />
-      <meshBasicMaterial ref={matRef} color="#ffff44" transparent opacity={1} />
+    <mesh ref={meshRef} visible={false} renderOrder={997}>
+      <cylinderGeometry args={[0.08, 0.04, 1, 6]} />
+      <meshBasicMaterial ref={matRef} color="#ffff44" transparent opacity={1} depthTest={false} />
     </mesh>
   );
 }

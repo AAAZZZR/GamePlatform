@@ -13,10 +13,8 @@ import { sfx } from '@/platform/audio';
 // ==========================================
 const CFG = {
   // Flight
-  ROLL_SENSITIVITY: 0.035,
+  YAW_SENSITIVITY: 0.04,
   PITCH_SENSITIVITY: 0.03,
-  YAW_FROM_ROLL: 0.025,
-  AUTO_LEVEL_RATE: 0.025,
   // Speed
   BASE_SPEED: 1.5,
   MIN_SPEED: 0.8,
@@ -116,7 +114,6 @@ interface GameState {
     hp: number;
     ammo: number;
     maxAmmo: number;
-    rollAngle: number;
     score: number;
     kills: number;
   };
@@ -266,7 +263,6 @@ function useGameLogic(
         hp: CFG.PLAYER_HP,
         ammo: CFG.MAX_AMMO,
         maxAmmo: CFG.MAX_AMMO,
-        rollAngle: 0,
         score: 0,
         kills: 0,
       },
@@ -351,28 +347,15 @@ function useGameLogic(
         smoothed.x += (nx - smoothed.x) * 0.12;
         smoothed.y += (ny - smoothed.y) * 0.12;
 
-        // 2. Rotation deltas in local frame (negate roll so tilt-right = bank-right)
-        const dRoll = -smoothed.x * CFG.ROLL_SENSITIVITY * dt;
+        // 2. Direct yaw + pitch (no roll — plane never barrel-rolls)
+        const dYaw = -smoothed.x * CFG.YAW_SENSITIVITY * dt;
         const dPitch = smoothed.y * CFG.PITCH_SENSITIVITY * dt;
 
-        // Track roll angle for bank-to-turn
-        let rollAngle = s.player.rollAngle + dRoll;
-
-        // Auto-level roll when input is small
-        if (Math.abs(smoothed.x) < 0.1) {
-          rollAngle *= (1 - CFG.AUTO_LEVEL_RATE * dt);
-        }
-        rollAngle = clamp(rollAngle, -1.2, 1.2);
-
-        const dYaw = rollAngle * CFG.YAW_FROM_ROLL * dt;
-
-        // 3. Apply to quaternion (multiply on right = local frame)
+        // 3. Apply pitch + yaw to quaternion
         _q.set(s.player.orientation.x, s.player.orientation.y, s.player.orientation.z, s.player.orientation.w);
         _qDelta.setFromAxisAngle(_v3.set(1, 0, 0), dPitch);
         _q.multiply(_qDelta);
         _qDelta.setFromAxisAngle(_v3.set(0, 1, 0), dYaw);
-        _q.multiply(_qDelta);
-        _qDelta.setFromAxisAngle(_v3.set(0, 0, 1), dRoll);
         _q.multiply(_qDelta);
         _q.normalize();
 
@@ -692,7 +675,6 @@ function useGameLogic(
             hp: Math.max(0, hp),
             ammo,
             maxAmmo: CFG.MAX_AMMO,
-            rollAngle,
             score,
             kills,
           },
