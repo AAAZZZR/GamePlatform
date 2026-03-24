@@ -245,7 +245,7 @@ function useGameLogic(
         // Physics: positive vy = downward on screen
         let vy = s.planeVY;
         vy += CFG.GRAVITY;                         // gravity pulls plane down (+vy)
-        vy += moveY * -CFG.TILT_FORCE;             // tilt forward (moveY>0) → climb (negative vy)
+        vy += moveY * CFG.TILT_FORCE;              // tilt forward (moveY>0) → dive (+vy), consistent with G1
         if (boosting) vy += CFG.BOOST_FORCE;       // boost upward (negative vy)
         vy = Math.max(-CFG.MAX_VY, Math.min(CFG.MAX_VY, vy));
 

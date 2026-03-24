@@ -91,6 +91,18 @@ interface RoundState {
   pauseUntil: number;
 }
 
+interface TracerState {
+  active: boolean;
+  startTime: number;
+  origin: Vec3;
+  direction: Vec3;
+}
+
+interface HitFeedback {
+  type: 'HIT' | 'MISS' | null;
+  time: number;
+}
+
 interface GameState {
   yaw: number;
   pitch: number;
@@ -107,6 +119,8 @@ interface GameState {
   status: GameStatus;
   startTime: number;
   discInRange: boolean;
+  tracer: TracerState;
+  hitFeedback: HitFeedback;
 }
 
 // ==========================================
@@ -336,6 +350,8 @@ function useGameLogic(
       status: 'READY' as GameStatus,
       startTime: 0,
       discInRange: false,
+      tracer: { active: false, startTime: 0, origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } },
+      hitFeedback: { type: null, time: 0 },
     };
   }, []);
 
@@ -356,6 +372,8 @@ function useGameLogic(
   fragmentsRef.current = gs.fragments;
   const muzzleRef = useRef(gs.muzzleFlashUntil);
   muzzleRef.current = gs.muzzleFlashUntil;
+  const tracerRef = useRef(gs.tracer);
+  tracerRef.current = gs.tracer;
 
   useEffect(() => { cbRef.current.onScoreChange(gs.score); }, [gs.score]);
   useEffect(() => { cbRef.current.onStatusChange(gs.status); }, [gs.status]);
@@ -397,7 +415,8 @@ function useGameLogic(
         smoothed.y += (ny - smoothed.y) * CFG.LOOK_SMOOTH;
 
         let yaw = s.yaw - smoothed.x * CFG.YAW_SENSITIVITY * 0.03 * dt;
-        let pitch = s.pitch + smoothed.y * CFG.PITCH_SENSITIVITY * 0.03 * dt;
+        yaw = clamp(yaw, -Math.PI / 2, Math.PI / 2);
+        let pitch = s.pitch - smoothed.y * CFG.PITCH_SENSITIVITY * 0.03 * dt;
         pitch = clamp(pitch, CFG.PITCH_MIN, CFG.PITCH_MAX);
 
         // ─── Update disc physics ───
@@ -450,6 +469,17 @@ function useGameLogic(
         let totalShots = s.totalShots;
         let totalHits = s.totalHits;
         let newFragments = [...s.fragments];
+        let tracer = s.tracer;
+        let hitFeedback = s.hitFeedback;
+
+        // Expire tracer after 150ms
+        if (tracer.active && (nowMs - tracer.startTime) > 150) {
+          tracer = { ...tracer, active: false };
+        }
+        // Expire hit feedback after 600ms
+        if (hitFeedback.type && (nowMs - hitFeedback.time) > 600) {
+          hitFeedback = { type: null, time: 0 };
+        }
 
         if (shootJustPressed && shotsLeft > 0 && (nowMs - lastShotTime) >= CFG.SHOT_COOLDOWN) {
           shotsLeft--;
@@ -457,6 +487,14 @@ function useGameLogic(
           muzzleFlashUntil = nowMs + CFG.MUZZLE_DURATION;
           totalShots++;
           sfx.shoot();
+
+          // Activate tracer
+          tracer = {
+            active: true,
+            startTime: nowMs,
+            origin: { x: camPos[0], y: camPos[1], z: camPos[2] },
+            direction: { x: fwd.x, y: fwd.y, z: fwd.z },
+          };
 
           // Find closest disc in cone
           let bestIdx = -1;
@@ -495,11 +533,15 @@ function useGameLogic(
             // Fragments
             newFragments = newFragments.concat(createFragments(hitDisc.pos));
 
+            // Hit feedback
+            hitFeedback = { type: 'HIT', time: nowMs };
+
             sfx.explosion();
             if (combo >= 3) sfx.powerup();
           } else {
             // Miss shot (no disc hit)
             combo = 0;
+            hitFeedback = { type: 'MISS', time: nowMs };
           }
         }
 
@@ -616,6 +658,8 @@ function useGameLogic(
           totalHits,
           round,
           discInRange,
+          tracer,
+          hitFeedback,
         }));
       }
 
@@ -626,7 +670,7 @@ function useGameLogic(
     return () => cancelAnimationFrame(loopId);
   }, [paused, inputRef, getInitialState]);
 
-  return { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef };
+  return { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef, tracerRef };
 }
 
 // ==========================================
@@ -858,28 +902,93 @@ function FragmentMeshes({ fragmentsRef }: { fragmentsRef: MutableRefObject<Fragm
   );
 }
 
-// ─── Muzzle Flash ───
+// ─── Muzzle Flash (bigger + glow) ───
 function MuzzleFlash({ muzzleRef, yawRef, pitchRef }: {
   muzzleRef: MutableRefObject<number>;
   yawRef: MutableRefObject<number>;
   pitchRef: MutableRefObject<number>;
 }) {
-  const meshRef = useRef<THREE.Mesh>(null);
+  const coreRef = useRef<THREE.Mesh>(null);
+  const glowRef = useRef<THREE.Mesh>(null);
+  const lightRef = useRef<THREE.PointLight>(null);
 
   useFrame(() => {
-    if (!meshRef.current) return;
     const nowMs = Date.now();
-    if (nowMs < muzzleRef.current) {
-      meshRef.current.visible = true;
-      // Place flash slightly in front of camera
+    const active = nowMs < muzzleRef.current;
+    if (coreRef.current) coreRef.current.visible = active;
+    if (glowRef.current) glowRef.current.visible = active;
+    if (lightRef.current) lightRef.current.visible = active;
+
+    if (active) {
       const yaw = yawRef.current;
       const pitch = pitchRef.current;
       const fwd = computeForwardVec(yaw, pitch);
-      meshRef.current.position.set(
-        CFG.CAM_POS[0] + fwd.x * 1.5,
-        CFG.CAM_POS[1] + fwd.y * 1.5 - 0.3,
-        CFG.CAM_POS[2] + fwd.z * 1.5,
+      const px = CFG.CAM_POS[0] + fwd.x * 1.5;
+      const py = CFG.CAM_POS[1] + fwd.y * 1.5 - 0.3;
+      const pz = CFG.CAM_POS[2] + fwd.z * 1.5;
+      if (coreRef.current) coreRef.current.position.set(px, py, pz);
+      if (glowRef.current) glowRef.current.position.set(px, py, pz);
+      if (lightRef.current) lightRef.current.position.set(px, py, pz);
+    }
+  });
+
+  return (
+    <>
+      {/* Bright core */}
+      <mesh ref={coreRef} visible={false}>
+        <sphereGeometry args={[0.5, 8, 8]} />
+        <meshBasicMaterial color="#ffffff" transparent opacity={0.95} />
+      </mesh>
+      {/* Outer glow */}
+      <mesh ref={glowRef} visible={false}>
+        <sphereGeometry args={[1.0, 8, 8]} />
+        <meshBasicMaterial color="#ffaa33" transparent opacity={0.5} />
+      </mesh>
+      {/* Point light for flash illumination */}
+      <pointLight ref={lightRef} color="#ffcc66" intensity={3} distance={15} visible={false} />
+    </>
+  );
+}
+
+// ─── Shot Tracer (thin cylinder beam) ───
+function ShotTracer({ tracerRef }: { tracerRef: MutableRefObject<TracerState> }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+  const _lookAt = useMemo(() => new THREE.Vector3(), []);
+  const _pos = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame(() => {
+    const t = tracerRef.current;
+    if (!meshRef.current || !matRef.current) return;
+
+    if (t.active) {
+      const elapsed = (Date.now() - t.startTime) / 150; // 0..1 over 150ms
+      const opacity = 1.0 - elapsed;
+
+      // Tracer extends from 2 units in front of camera to 60 units out
+      const tracerLen = 58;
+      const midDist = 2 + tracerLen / 2;
+
+      const mx = t.origin.x + t.direction.x * midDist;
+      const my = t.origin.y + t.direction.y * midDist - 0.3;
+      const mz = t.origin.z + t.direction.z * midDist;
+      meshRef.current.position.set(mx, my, mz);
+
+      // Align cylinder along the shot direction
+      _pos.set(mx, my, mz);
+      _lookAt.set(
+        t.origin.x + t.direction.x * 60,
+        t.origin.y + t.direction.y * 60 - 0.3,
+        t.origin.z + t.direction.z * 60,
       );
+      meshRef.current.lookAt(_lookAt);
+      meshRef.current.rotateX(Math.PI / 2);
+
+      // Scale: thin radius (0.03), length = tracerLen
+      meshRef.current.scale.set(1, tracerLen, 1);
+
+      matRef.current.opacity = Math.max(0, opacity);
+      meshRef.current.visible = true;
     } else {
       meshRef.current.visible = false;
     }
@@ -887,8 +996,8 @@ function MuzzleFlash({ muzzleRef, yawRef, pitchRef }: {
 
   return (
     <mesh ref={meshRef} visible={false}>
-      <sphereGeometry args={[0.3, 8, 8]} />
-      <meshBasicMaterial color="#ffff88" transparent opacity={0.8} />
+      <cylinderGeometry args={[0.03, 0.03, 1, 4]} />
+      <meshBasicMaterial ref={matRef} color="#ffff44" transparent opacity={1} />
     </mesh>
   );
 }
@@ -900,6 +1009,7 @@ function Scene({
   discsRef,
   fragmentsRef,
   muzzleRef,
+  tracerRef,
   status,
 }: {
   yawRef: MutableRefObject<number>;
@@ -907,6 +1017,7 @@ function Scene({
   discsRef: MutableRefObject<DiscState[]>;
   fragmentsRef: MutableRefObject<Fragment[]>;
   muzzleRef: MutableRefObject<number>;
+  tracerRef: MutableRefObject<TracerState>;
   status: GameStatus;
 }) {
   return (
@@ -918,6 +1029,7 @@ function Scene({
           <DiscMeshes discsRef={discsRef} />
           <FragmentMeshes fragmentsRef={fragmentsRef} />
           <MuzzleFlash muzzleRef={muzzleRef} yawRef={yawRef} pitchRef={pitchRef} />
+          <ShotTracer tracerRef={tracerRef} />
         </>
       )}
     </>
@@ -1032,13 +1144,18 @@ interface Props {
 }
 
 export default function Game10({ inputRef, paused, callbacks }: Props) {
-  const { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef } = useGameLogic(inputRef, paused, callbacks);
-  const { status, score, combo, totalShots, totalHits, round, shotsLeft, discInRange } = gs;
+  const { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef, tracerRef } = useGameLogic(inputRef, paused, callbacks);
+  const { status, score, combo, totalShots, totalHits, round, shotsLeft, discInRange, hitFeedback } = gs;
 
   const phase = getPhase(round.roundNumber);
   const accuracy = totalShots > 0 ? Math.round((totalHits / totalShots) * 100) : 0;
   const comboText = combo >= 2 ? `x${Math.min(combo, 5)}!` : '';
   const showPullPrompt = status === 'PLAYING' && round.waitingForPull && round.pauseUntil === 0;
+
+  // HIT/MISS feedback timing
+  const feedbackAge = hitFeedback.type ? Date.now() - hitFeedback.time : 9999;
+  const showFeedback = hitFeedback.type && feedbackAge < 600;
+  const feedbackOpacity = showFeedback ? Math.max(0, 1 - feedbackAge / 600) : 0;
 
   return (
     <div className="relative w-full h-screen overflow-hidden select-none" style={{ background: '#87CEEB' }}>
@@ -1054,6 +1171,7 @@ export default function Game10({ inputRef, paused, callbacks }: Props) {
           discsRef={discsRef}
           fragmentsRef={fragmentsRef}
           muzzleRef={muzzleRef}
+          tracerRef={tracerRef}
           status={status}
         />
       </Canvas>
@@ -1061,6 +1179,42 @@ export default function Game10({ inputRef, paused, callbacks }: Props) {
       {/* HUD: Playing */}
       {status === 'PLAYING' && (
         <>
+          {/* Screen flash on HIT */}
+          {hitFeedback.type === 'HIT' && feedbackOpacity > 0 && (
+            <div
+              className="absolute inset-0 z-30 pointer-events-none"
+              style={{
+                background: `rgba(255, 200, 50, ${feedbackOpacity * 0.2})`,
+              }}
+            />
+          )}
+
+          {/* HIT/MISS text feedback */}
+          {showFeedback && (
+            <div
+              className="absolute z-30 pointer-events-none"
+              style={{
+                top: '40%',
+                left: '50%',
+                transform: `translate(-50%, -50%) scale(${1 + (1 - feedbackOpacity) * 0.3})`,
+                opacity: feedbackOpacity,
+              }}
+            >
+              <div
+                className="font-black tracking-[0.3em]"
+                style={{
+                  fontSize: hitFeedback.type === 'HIT' ? 48 : 36,
+                  color: hitFeedback.type === 'HIT' ? '#ffcc00' : '#ff4444',
+                  textShadow: hitFeedback.type === 'HIT'
+                    ? '0 0 30px rgba(255,200,0,0.8), 0 0 60px rgba(255,150,0,0.4), 0 3px 8px rgba(0,0,0,0.5)'
+                    : '0 0 20px rgba(255,50,50,0.6), 0 3px 8px rgba(0,0,0,0.5)',
+                }}
+              >
+                {hitFeedback.type === 'HIT' ? 'HIT!' : 'MISS'}
+              </div>
+            </div>
+          )}
+
           {/* Crosshair */}
           <Crosshair inRange={discInRange} />
 

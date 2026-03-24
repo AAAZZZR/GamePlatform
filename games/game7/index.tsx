@@ -194,7 +194,7 @@ function useGameLogic(
 
   useEffect(() => {
     const update = () => {
-      screenRef.current = { w: window.innerWidth, h: window.innerHeight };
+      screenRef.current = { w: Math.min(window.innerWidth, 420), h: window.innerHeight };
     };
     update();
     window.addEventListener('resize', update);
@@ -512,7 +512,7 @@ export default function Game7({ inputRef, paused, callbacks }: Props) {
         fontFamily: "'Patrick Hand', 'Comic Sans MS', cursive, sans-serif",
       }}
     >
-      {/* Grid pattern background */}
+      {/* Grid pattern background — fills full viewport */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -522,6 +522,15 @@ export default function Game7({ inputRef, paused, callbacks }: Props) {
           backgroundPosition: `0 ${(cameraY * -1) % 25}px`,
         }}
       />
+
+      {/* Centered game area container */}
+      <div
+        className="relative h-full overflow-hidden"
+        style={{
+          maxWidth: 420,
+          margin: '0 auto',
+        }}
+      >
 
       {/* Height markers */}
       {Array.from({ length: 20 }, (_, i) => {
@@ -747,6 +756,7 @@ export default function Game7({ inputRef, paused, callbacks }: Props) {
         </div>
       )}
 
+      </div>{/* end centered game area container */}
     </div>
   );
 }

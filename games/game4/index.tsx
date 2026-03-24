@@ -180,9 +180,9 @@ function useGameLogic(
         const speed = Math.min(CFG.MAX_SPEED, CFG.BASE_SPEED + elapsed * CFG.SPEED_RAMP)
           * (isBoosting ? CFG.BOOST_MULT : 1);
 
-        // Player movement
+        // Player movement (negate Y: tilt forward = input.move.y>0 → move DOWN in 3D = -Y)
         let px = s.px + input.move.x * dt * 0.12;
-        let py = s.py + input.move.y * dt * 0.12;
+        let py = s.py - input.move.y * dt * 0.12;
         const margin = CFG.PLAYER_R + 0.2;
         px = Math.max(-CFG.TUNNEL_HW + margin, Math.min(CFG.TUNNEL_HW - margin, px));
         py = Math.max(-CFG.TUNNEL_HH + margin, Math.min(CFG.TUNNEL_HH - margin, py));
