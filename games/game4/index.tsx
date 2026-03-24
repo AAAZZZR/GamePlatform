@@ -31,15 +31,20 @@ const CFG = {
   GATE_SPACING_MIN: 18,
   GATE_SPACING_MAX: 28,
   GATE_THICKNESS: 0.4,
-  INITIAL_GAP: 5.0,
-  MIN_GAP: 2.2,
-  GAP_SHRINK: 0.06,   // per gate
+  INITIAL_GAP: 5.5,
+  MIN_GAP: 2.8,
+  GAP_SHRINK: 0.04,   // per gate (gentler shrink)
   // Orbs
   ORB_SPACING: 10,
   ORB_R: 0.3,
   ORB_SCORE: 100,
   // Scoring
   SCORE_PER_DIST: 2,
+  // Movement feel — input.move.x/y range is [-15, +15]
+  // Target: full tilt crosses half the tunnel (~6 units) in ~0.4s = responsive but not twitchy
+  // 15 * 0.06 = 0.9 units/frame → ~6.7 frames (0.11s) center-to-edge; use smoothing to tame it
+  MOVE_FACTOR: 0.06,     // position-per-input-per-dt
+  SMOOTHING: 0.18,       // lerp toward target velocity (0=instant, 1=frozen). 0.18 = slight smoothing
 };
 
 // Neon colors
@@ -69,6 +74,8 @@ interface Orb {
 interface GameState {
   px: number;
   py: number;
+  vx: number;          // smoothed velocity X
+  vy: number;          // smoothed velocity Y
   distance: number;
   speed: number;
   gates: Gate[];
@@ -137,7 +144,8 @@ function useGameLogic(
       oz += CFG.ORB_SPACING + Math.random() * 5;
     }
     return {
-      px: 0, py: 0, distance: 0, speed: CFG.BASE_SPEED,
+      px: 0, py: 0, vx: 0, vy: 0,
+      distance: 0, speed: CFG.BASE_SPEED,
       gates, orbs,
       status: 'READY', score: 0, startTime: 0,
       nextGateZ: gz, nextOrbZ: oz, gateCount: 8,
@@ -180,9 +188,17 @@ function useGameLogic(
         const speed = Math.min(CFG.MAX_SPEED, CFG.BASE_SPEED + elapsed * CFG.SPEED_RAMP)
           * (isBoosting ? CFG.BOOST_MULT : 1);
 
-        // Player movement (negate Y: tilt forward = input.move.y>0 → move DOWN in 3D = -Y)
-        let px = s.px + input.move.x * dt * 0.12;
-        let py = s.py - input.move.y * dt * 0.12;
+        // Player movement with slight smoothing
+        // Target velocity from input (negate Y: tilt forward = input.move.y>0 → move DOWN = -Y in 3D)
+        const targetVx = input.move.x * CFG.MOVE_FACTOR;
+        const targetVy = -input.move.y * CFG.MOVE_FACTOR;
+        // Exponential smoothing: lerp velocity toward target each frame
+        // smoothing=0 → instant (raw input), smoothing=1 → frozen
+        const alpha = Math.pow(CFG.SMOOTHING, dt); // frame-rate-independent smoothing
+        const vx = alpha * s.vx + (1 - alpha) * targetVx;
+        const vy = alpha * s.vy + (1 - alpha) * targetVy;
+        let px = s.px + vx * dt;
+        let py = s.py + vy * dt;
         const margin = CFG.PLAYER_R + 0.2;
         px = Math.max(-CFG.TUNNEL_HW + margin, Math.min(CFG.TUNNEL_HW - margin, px));
         py = Math.max(-CFG.TUNNEL_HH + margin, Math.min(CFG.TUNNEL_HH - margin, py));
@@ -248,7 +264,8 @@ function useGameLogic(
         }
 
         setGs({
-          px, py, distance, speed,
+          px, py, vx, vy,
+          distance, speed,
           gates, orbs: filteredOrbs,
           status: gameOver ? 'GAME_OVER' : 'PLAYING',
           score, startTime: s.startTime,

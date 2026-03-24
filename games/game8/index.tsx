@@ -12,10 +12,11 @@ const CFG = {
   PLANE_X_RATIO: 0.25,         // plane at 25% from left
   PLANE_W: 30,
   PLANE_H: 15,
-  GRAVITY: 0.12,               // gentle gravity pull
-  TILT_FORCE: 0.35,            // tilt-forward → climb (positive = up after sign flip)
-  BOOST_FORCE: -0.4,           // boost pushes plane upward (negative = up on screen)
-  MAX_VY: 5,
+  GRAVITY: 0.08,               // gentle gravity — paper plane glides down naturally
+  TILT_FORCE: 0.18,            // physics force from tilt — enough to overcome gravity with inertia
+  VY_DAMPING: 0.92,            // light air resistance — plane carries momentum like a real paper plane
+  BOOST_FORCE: -0.35,          // boost climb force
+  MAX_VY: 5,                   // max velocity
   INPUT_SCALE: 15,             // platform input.move ranges -15..+15; divide to get -1..+1
   INITIAL_SCROLL_SPEED: 2.5,
   MAX_SCROLL_SPEED: 7,
@@ -242,11 +243,13 @@ function useGameLogic(
         const moveY = Math.max(-1, Math.min(1, rawY));
         const boosting = !!input.actions['boost'];
 
-        // Physics: positive vy = downward on screen
+        // Physics: pure velocity-based — paper plane has real inertia and momentum
+        // positive vy = downward on screen
         let vy = s.planeVY;
+        vy *= CFG.VY_DAMPING;                      // air resistance (light — keeps momentum)
         vy += CFG.GRAVITY;                         // gravity pulls plane down (+vy)
-        vy += moveY * CFG.TILT_FORCE;              // tilt forward (moveY>0) → dive (+vy), consistent with G1
-        if (boosting) vy += CFG.BOOST_FORCE;       // boost upward (negative vy)
+        vy += moveY * CFG.TILT_FORCE;              // tilt steers the plane
+        if (boosting) vy += CFG.BOOST_FORCE;       // boost climb
         vy = Math.max(-CFG.MAX_VY, Math.min(CFG.MAX_VY, vy));
 
         let planeY = s.planeY + vy;
@@ -426,8 +429,10 @@ export default function Game8({ inputRef, paused, callbacks }: Props) {
 
   const planeX = dims.w * CFG.PLANE_X_RATIO;
 
-  // Plane pitch angle based on vertical velocity
-  const pitchDeg = Math.max(-35, Math.min(35, planeVY * 6));
+  // Plane pitch angle: blend velocity + raw input for instant visual response
+  const rawInput = inputRef.current.move.y / CFG.INPUT_SCALE;
+  const clampedInput = Math.max(-1, Math.min(1, rawInput));
+  const pitchDeg = Math.max(-35, Math.min(35, planeVY * 5 + clampedInput * 12));
 
   const totalScore = score + starScore;
 
@@ -610,7 +615,6 @@ export default function Game8({ inputRef, paused, callbacks }: Props) {
           width: 40,
           height: 24,
           transform: `rotate(${pitchDeg}deg)`,
-          transition: 'transform 0.05s linear',
           filter: boosting ? 'drop-shadow(0 0 6px rgba(135,206,235,0.8))' : 'drop-shadow(1px 2px 3px rgba(0,0,0,0.2))',
         }}
       >

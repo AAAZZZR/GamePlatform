@@ -24,9 +24,12 @@ const CFG = {
   DISC_GROUND_Y: 0.5,
   DISC_RADIUS: 0.8,
   // Shooting
-  CONE_HALF_ANGLE: 4.5 * (Math.PI / 180),
-  SHOT_COOLDOWN: 400,
+  SHOT_COOLDOWN: 800,
   MAX_SHOTS: 2,
+  BULLET_SPEED: 90,
+  BULLET_LIFETIME: 2.0,
+  BULLET_HIT_RADIUS: 1.5,
+  BULLET_GRAVITY: -4.0,
   // Shatter
   FRAGMENT_COUNT: 8,
   FRAGMENT_LIFE: 1.5,
@@ -73,6 +76,13 @@ interface Fragment {
   color: string;
 }
 
+interface Bullet {
+  id: number;
+  pos: Vec3;
+  vel: Vec3;
+  life: number;
+}
+
 interface LaunchEntry {
   launchers: number[];
   speeds: number[];
@@ -91,13 +101,6 @@ interface RoundState {
   pauseUntil: number;
 }
 
-interface TracerState {
-  active: boolean;
-  startTime: number;
-  origin: Vec3;
-  direction: Vec3;
-}
-
 interface HitFeedback {
   type: 'HIT' | 'MISS' | null;
   time: number;
@@ -108,6 +111,7 @@ interface GameState {
   pitch: number;
   discs: DiscState[];
   fragments: Fragment[];
+  bullets: Bullet[];
   shotsLeft: number;
   lastShotTime: number;
   muzzleFlashUntil: number;
@@ -119,7 +123,6 @@ interface GameState {
   status: GameStatus;
   startTime: number;
   discInRange: boolean;
-  tracer: TracerState;
   hitFeedback: HitFeedback;
 }
 
@@ -284,16 +287,6 @@ function computeForwardVec(yaw: number, pitch: number): Vec3 {
   };
 }
 
-function angleBetween(fwd: Vec3, dx: number, dy: number, dz: number): number {
-  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (len < 0.001) return Math.PI;
-  const nx = dx / len;
-  const ny = dy / len;
-  const nz = dz / len;
-  const dot = fwd.x * nx + fwd.y * ny + fwd.z * nz;
-  return Math.acos(clamp(dot, -1, 1));
-}
-
 const FRAG_COLORS = ['#ff6600', '#ff4400', '#ff8800', '#cc3300', '#ffaa00', '#ff5500', '#ee2200', '#ff7722'];
 
 function createFragments(pos: Vec3): Fragment[] {
@@ -314,6 +307,13 @@ function createFragments(pos: Vec3): Fragment[] {
   return frags;
 }
 
+function dist3(a: Vec3, b: Vec3): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 // ==========================================
 // 4. Game Logic Hook
 // ==========================================
@@ -330,6 +330,7 @@ function useGameLogic(
       pitch: 0.3,
       discs: [],
       fragments: [],
+      bullets: [],
       shotsLeft: CFG.MAX_SHOTS,
       lastShotTime: 0,
       muzzleFlashUntil: 0,
@@ -350,7 +351,6 @@ function useGameLogic(
       status: 'READY' as GameStatus,
       startTime: 0,
       discInRange: false,
-      tracer: { active: false, startTime: 0, origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } },
       hitFeedback: { type: null, time: 0 },
     };
   }, []);
@@ -372,8 +372,8 @@ function useGameLogic(
   fragmentsRef.current = gs.fragments;
   const muzzleRef = useRef(gs.muzzleFlashUntil);
   muzzleRef.current = gs.muzzleFlashUntil;
-  const tracerRef = useRef(gs.tracer);
-  tracerRef.current = gs.tracer;
+  const bulletsRef = useRef(gs.bullets);
+  bulletsRef.current = gs.bullets;
 
   useEffect(() => { cbRef.current.onScoreChange(gs.score); }, [gs.score]);
   useEffect(() => { cbRef.current.onStatusChange(gs.status); }, [gs.status]);
@@ -439,7 +439,7 @@ function useGameLogic(
           }
         }
 
-        // ─── Disc in range check (for crosshair color) ───
+        // ─── Disc in range check (for crosshair color — use direction proximity) ───
         const fwd = computeForwardVec(yaw, pitch);
         const camPos = CFG.CAM_POS;
         let discInRange = false;
@@ -449,14 +449,17 @@ function useGameLogic(
           const dx = d.pos.x - camPos[0];
           const dy = d.pos.y - camPos[1];
           const dz = d.pos.z - camPos[2];
-          const angle = angleBetween(fwd, dx, dy, dz);
-          if (angle < CFG.CONE_HALF_ANGLE) {
+          const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (len < 0.001) continue;
+          const dot = (fwd.x * dx + fwd.y * dy + fwd.z * dz) / len;
+          const angle = Math.acos(clamp(dot, -1, 1));
+          if (angle < 8 * (Math.PI / 180)) {
             discInRange = true;
             break;
           }
         }
 
-        // ─── Shooting (hitscan + cone) ───
+        // ─── Shooting (spawn projectile bullet) ───
         const shootPressed = !!input.actions['fire'];
         const shootJustPressed = shootPressed && !prevShoot;
         prevShoot = shootPressed;
@@ -469,13 +472,9 @@ function useGameLogic(
         let totalShots = s.totalShots;
         let totalHits = s.totalHits;
         let newFragments = [...s.fragments];
-        let tracer = s.tracer;
+        let newBullets = [...s.bullets];
         let hitFeedback = s.hitFeedback;
 
-        // Expire tracer after 300ms
-        if (tracer.active && (nowMs - tracer.startTime) > 300) {
-          tracer = { ...tracer, active: false };
-        }
         // Expire hit feedback after 600ms
         if (hitFeedback.type && (nowMs - hitFeedback.time) > 600) {
           hitFeedback = { type: null, time: 0 };
@@ -486,62 +485,88 @@ function useGameLogic(
           lastShotTime = nowMs;
           muzzleFlashUntil = nowMs + CFG.MUZZLE_DURATION;
           totalShots++;
-          sfx.shoot();
+          sfx.shotgunBlast();
 
-          // Activate tracer
-          tracer = {
-            active: true,
-            startTime: nowMs,
-            origin: { x: camPos[0], y: camPos[1], z: camPos[2] },
-            direction: { x: fwd.x, y: fwd.y, z: fwd.z },
-          };
+          // Spawn a bullet at camera position traveling along forward direction
+          const bulletFwd = computeForwardVec(yaw, pitch);
+          newBullets.push({
+            id: nid(),
+            pos: {
+              x: camPos[0] + bulletFwd.x * 1.5,
+              y: camPos[1] + bulletFwd.y * 1.5 - 0.3,
+              z: camPos[2] + bulletFwd.z * 1.5,
+            },
+            vel: {
+              x: bulletFwd.x * CFG.BULLET_SPEED,
+              y: bulletFwd.y * CFG.BULLET_SPEED,
+              z: bulletFwd.z * CFG.BULLET_SPEED,
+            },
+            life: CFG.BULLET_LIFETIME,
+          });
+        }
 
-          // Find closest disc in cone
-          let bestIdx = -1;
-          let bestAngle = Infinity;
-          for (let i = 0; i < newDiscs.length; i++) {
-            const d = newDiscs[i];
+        // ─── Update bullets: move, check collisions, expire ───
+        for (let bi = newBullets.length - 1; bi >= 0; bi--) {
+          const b = newBullets[bi];
+
+          // Apply slight gravity for realism
+          b.vel.y += CFG.BULLET_GRAVITY * dtSec;
+
+          // Move bullet
+          b.pos.x += b.vel.x * dtSec;
+          b.pos.y += b.vel.y * dtSec;
+          b.pos.z += b.vel.z * dtSec;
+
+          // Decrease lifetime
+          b.life -= dtSec;
+
+          // Check collision with each alive disc
+          let bulletHit = false;
+          for (let di = 0; di < newDiscs.length; di++) {
+            const d = newDiscs[di];
             if (!d.alive || d.hitStatus !== 'flying') continue;
-            const dx = d.pos.x - camPos[0];
-            const dy = d.pos.y - camPos[1];
-            const dz = d.pos.z - camPos[2];
-            const angle = angleBetween(fwd, dx, dy, dz);
-            if (angle < CFG.CONE_HALF_ANGLE && angle < bestAngle) {
-              bestAngle = angle;
-              bestIdx = i;
+
+            const distance = dist3(b.pos, d.pos);
+            if (distance < CFG.BULLET_HIT_RADIUS) {
+              // HIT!
+              d.hitStatus = 'hit';
+              d.alive = false;
+              totalHits++;
+              combo++;
+              bulletHit = true;
+
+              // Score
+              let pts = CFG.HIT_SCORE;
+              const discElapsed = (nowMs - d.launchTime) / 1000;
+              const arcPct = discElapsed / CFG.DISC_LIFETIME;
+              if (arcPct < CFG.EARLY_THRESHOLD) {
+                pts += CFG.EARLY_BONUS;
+              }
+              const comboMult = Math.min(combo, 5);
+              pts *= comboMult;
+              score += pts;
+
+              // Fragments
+              newFragments = newFragments.concat(createFragments(d.pos));
+
+              // Hit feedback
+              hitFeedback = { type: 'HIT', time: nowMs };
+
+              sfx.discShatter();
+              if (combo >= 3) sfx.powerup();
+              break;
             }
           }
 
-          if (bestIdx >= 0) {
-            const hitDisc = newDiscs[bestIdx];
-            hitDisc.hitStatus = 'hit';
-            hitDisc.alive = false;
-            totalHits++;
-            combo++;
-
-            // Score
-            let pts = CFG.HIT_SCORE;
-            const discElapsed = (nowMs - hitDisc.launchTime) / 1000;
-            const arcPct = discElapsed / CFG.DISC_LIFETIME;
-            if (arcPct < CFG.EARLY_THRESHOLD) {
-              pts += CFG.EARLY_BONUS;
+          // Remove bullet if it hit something, expired, or went below ground
+          if (bulletHit || b.life <= 0 || b.pos.y < 0) {
+            // If bullet expired without hitting anything and there were flying discs when fired,
+            // that counts as a miss (the shot missed)
+            if (!bulletHit && b.life <= 0) {
+              combo = 0;
+              hitFeedback = { type: 'MISS', time: nowMs };
             }
-            const comboMult = Math.min(combo, 5);
-            pts *= comboMult;
-            score += pts;
-
-            // Fragments
-            newFragments = newFragments.concat(createFragments(hitDisc.pos));
-
-            // Hit feedback
-            hitFeedback = { type: 'HIT', time: nowMs };
-
-            sfx.explosion();
-            if (combo >= 3) sfx.powerup();
-          } else {
-            // Miss shot (no disc hit)
-            combo = 0;
-            hitFeedback = { type: 'MISS', time: nowMs };
+            newBullets.splice(bi, 1);
           }
         }
 
@@ -596,8 +621,8 @@ function useGameLogic(
             round.pullTime = 0;
             shotsLeft = CFG.MAX_SHOTS;
           }
-        } else if (!anyFlying && round.pullTime === 0 && round.pauseUntil === 0) {
-          // All discs resolved, check if we need to advance
+        } else if (!anyFlying && newBullets.length === 0 && round.pullTime === 0 && round.pauseUntil === 0) {
+          // All discs resolved AND no bullets in flight, check if we need to advance
           if (newDiscs.length > 0) {
             // Accumulate round stats from resolved discs
             round.discsHit += roundHit;
@@ -649,6 +674,7 @@ function useGameLogic(
           pitch,
           discs: newDiscs,
           fragments: newFragments,
+          bullets: newBullets,
           shotsLeft,
           lastShotTime,
           muzzleFlashUntil,
@@ -658,7 +684,6 @@ function useGameLogic(
           totalHits,
           round,
           discInRange,
-          tracer,
           hitFeedback,
         }));
       }
@@ -670,7 +695,7 @@ function useGameLogic(
     return () => cancelAnimationFrame(loopId);
   }, [paused, inputRef, getInitialState]);
 
-  return { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef, tracerRef };
+  return { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef, bulletsRef };
 }
 
 // ==========================================
@@ -950,54 +975,74 @@ function MuzzleFlash({ muzzleRef, yawRef, pitchRef }: {
   );
 }
 
-// ─── Shot Tracer (thin cylinder beam) ───
-function ShotTracer({ tracerRef }: { tracerRef: MutableRefObject<TracerState> }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const matRef = useRef<THREE.MeshBasicMaterial>(null);
-  const _lookAt = useMemo(() => new THREE.Vector3(), []);
-  const _pos = useMemo(() => new THREE.Vector3(), []);
+// ─── Bullet Meshes (visible projectiles) ───
+function BulletMeshes({ bulletsRef }: { bulletsRef: MutableRefObject<Bullet[]> }) {
+  const maxBullets = 10;
+  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const glowRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const lightRefs = useRef<(THREE.PointLight | null)[]>([]);
 
   useFrame(() => {
-    const t = tracerRef.current;
-    if (!meshRef.current || !matRef.current) return;
+    const bullets = bulletsRef.current;
+    for (let i = 0; i < maxBullets; i++) {
+      const mesh = meshRefs.current[i];
+      const glow = glowRefs.current[i];
+      const light = lightRefs.current[i];
+      if (!mesh || !glow) continue;
 
-    if (t.active) {
-      const elapsed = (Date.now() - t.startTime) / 300; // 0..1 over 300ms
-      const opacity = 1.0 - elapsed;
-
-      // Tracer extends from 1.5 units in front of camera to 60 units out
-      const tracerLen = 58;
-      const midDist = 1.5 + tracerLen / 2;
-
-      const mx = t.origin.x + t.direction.x * midDist;
-      const my = t.origin.y + t.direction.y * midDist - 0.3;
-      const mz = t.origin.z + t.direction.z * midDist;
-      meshRef.current.position.set(mx, my, mz);
-
-      // Align cylinder along the shot direction
-      _pos.set(mx, my, mz);
-      _lookAt.set(
-        t.origin.x + t.direction.x * 60,
-        t.origin.y + t.direction.y * 60 - 0.3,
-        t.origin.z + t.direction.z * 60,
-      );
-      meshRef.current.lookAt(_lookAt);
-      meshRef.current.rotateX(Math.PI / 2);
-
-      meshRef.current.scale.set(1, tracerLen, 1);
-
-      matRef.current.opacity = Math.max(0, opacity);
-      meshRef.current.visible = true;
-    } else {
-      meshRef.current.visible = false;
+      if (i < bullets.length) {
+        const b = bullets[i];
+        mesh.visible = true;
+        mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
+        glow.visible = true;
+        glow.position.set(b.pos.x, b.pos.y, b.pos.z);
+        if (light) {
+          light.visible = true;
+          light.position.set(b.pos.x, b.pos.y, b.pos.z);
+        }
+      } else {
+        mesh.visible = false;
+        glow.visible = false;
+        if (light) light.visible = false;
+      }
     }
   });
 
   return (
-    <mesh ref={meshRef} visible={false} renderOrder={997}>
-      <cylinderGeometry args={[0.08, 0.04, 1, 6]} />
-      <meshBasicMaterial ref={matRef} color="#ffff44" transparent opacity={1} depthTest={false} />
-    </mesh>
+    <>
+      {Array.from({ length: maxBullets }, (_, i) => (
+        <group key={`bullet${i}`}>
+          {/* Bright core sphere */}
+          <mesh
+            ref={(el) => { meshRefs.current[i] = el; }}
+            visible={false}
+            renderOrder={996}
+          >
+            <sphereGeometry args={[0.15, 8, 8]} />
+            <meshBasicMaterial color="#ffee44" />
+          </mesh>
+          {/* Outer glow */}
+          <mesh
+            ref={(el) => { glowRefs.current[i] = el; }}
+            visible={false}
+            renderOrder={995}
+          >
+            <sphereGeometry args={[0.35, 8, 8]} />
+            <meshBasicMaterial color="#ffaa00" transparent opacity={0.5} depthTest={false} />
+          </mesh>
+          {/* Small point light on each bullet */}
+          {i < 3 && (
+            <pointLight
+              ref={(el) => { lightRefs.current[i] = el; }}
+              color="#ffcc44"
+              intensity={2}
+              distance={8}
+              visible={false}
+            />
+          )}
+        </group>
+      ))}
+    </>
   );
 }
 
@@ -1008,7 +1053,7 @@ function Scene({
   discsRef,
   fragmentsRef,
   muzzleRef,
-  tracerRef,
+  bulletsRef,
   status,
 }: {
   yawRef: MutableRefObject<number>;
@@ -1016,7 +1061,7 @@ function Scene({
   discsRef: MutableRefObject<DiscState[]>;
   fragmentsRef: MutableRefObject<Fragment[]>;
   muzzleRef: MutableRefObject<number>;
-  tracerRef: MutableRefObject<TracerState>;
+  bulletsRef: MutableRefObject<Bullet[]>;
   status: GameStatus;
 }) {
   return (
@@ -1028,7 +1073,7 @@ function Scene({
           <DiscMeshes discsRef={discsRef} />
           <FragmentMeshes fragmentsRef={fragmentsRef} />
           <MuzzleFlash muzzleRef={muzzleRef} yawRef={yawRef} pitchRef={pitchRef} />
-          <ShotTracer tracerRef={tracerRef} />
+          <BulletMeshes bulletsRef={bulletsRef} />
         </>
       )}
     </>
@@ -1143,7 +1188,7 @@ interface Props {
 }
 
 export default function Game10({ inputRef, paused, callbacks }: Props) {
-  const { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef, tracerRef } = useGameLogic(inputRef, paused, callbacks);
+  const { gs, yawRef, pitchRef, discsRef, fragmentsRef, muzzleRef, bulletsRef } = useGameLogic(inputRef, paused, callbacks);
   const { status, score, combo, totalShots, totalHits, round, shotsLeft, discInRange, hitFeedback } = gs;
 
   const phase = getPhase(round.roundNumber);
@@ -1170,7 +1215,7 @@ export default function Game10({ inputRef, paused, callbacks }: Props) {
           discsRef={discsRef}
           fragmentsRef={fragmentsRef}
           muzzleRef={muzzleRef}
-          tracerRef={tracerRef}
+          bulletsRef={bulletsRef}
           status={status}
         />
       </Canvas>
