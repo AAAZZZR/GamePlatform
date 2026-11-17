@@ -478,7 +478,7 @@ export class HudController {
     this.setText(els.wave, waveText);
     const multiplier = Math.min(game.streak, SCORING.MAX_MULTIPLIER);
     this.show(els.streak, game.streak >= 2);
-    this.setText(els.streak, `×${multiplier} STREAK`);
+    this.setText(els.streak, `${game.streak} KILL STREAK  ×${multiplier}`);
     els.streak.style.opacity = `${0.4 + 0.6 * clamp(game.streakTimer / SCORING.STREAK_WINDOW, 0, 1)}`;
 
     // ─── 速度 / 高度 / 彈藥 ───
@@ -629,7 +629,7 @@ export class HudController {
           [{ opacity: 1, transform: 'scale(1.6)', color: '#ff3a1a' }, { opacity: 0, transform: 'scale(1)', color: '#ff3a1a' }],
           { duration: 420, easing: 'ease-out' },
         );
-        this.showPopup(event.pos, `+${event.points}`, event.multiplier > 1 ? `×${event.multiplier} STREAK` : 'SPLASH ONE', camera, size);
+        this.showPopup(event.pos, `+${event.points}`, event.multiplier > 1 ? `×${event.multiplier} STREAK BONUS` : 'SPLASH ONE', camera, size);
         break;
       }
       case 'playerHit': {

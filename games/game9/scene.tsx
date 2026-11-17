@@ -319,7 +319,7 @@ function ParticleLayer({ game, kind }: GameProp & { kind: 'fire' | 'smoke' }) {
     mesh.count = 0;
   }, [capacity]);
 
-  useFrame(() => {
+  useFrame(({ camera }) => {
     const mesh = meshRef.current;
     if (!mesh) return;
     const pool = kind === 'fire' ? game.fire : game.smoke;
@@ -328,6 +328,9 @@ function ParticleLayer({ game, kind }: GameProp & { kind: 'fire' | 'smoke' }) {
       if (!pt.active || n >= capacity) continue;
       const fade = pt.life / pt.maxLife;
       let size = pt.startSize + (pt.endSize - pt.startSize) * (1 - fade);
+      // 追蹤鏡頭會穿過留在原地的煙和水花：離鏡頭太近就縮小，不會糊滿畫面
+      const cameraDist = pt.pos.distanceTo(camera.position);
+      size *= clamp((cameraDist - 2) / 8, 0, 1);
       if (kind === 'fire') {
         // 加法混色：顏色變暗 = 變透明
         _fade.copy(pt.color).multiplyScalar(Math.pow(fade, 1.3));
@@ -351,7 +354,7 @@ function ParticleLayer({ game, kind }: GameProp & { kind: 'fire' | 'smoke' }) {
   if (kind === 'fire') {
     return (
       <instancedMesh ref={meshRef} args={[undefined, undefined, capacity]} frustumCulled={false}>
-        <icosahedronGeometry args={[1, 0]} />
+        <icosahedronGeometry args={[1, 1]} />
         <meshBasicMaterial
           toneMapped={false}
           transparent
@@ -364,7 +367,7 @@ function ParticleLayer({ game, kind }: GameProp & { kind: 'fire' | 'smoke' }) {
   return (
     <instancedMesh ref={meshRef} args={[undefined, undefined, capacity]} frustumCulled={false}>
       <icosahedronGeometry args={[1, 1]} />
-      <meshLambertMaterial transparent opacity={0.55} depthWrite={false} emissive="#3a4650" emissiveIntensity={0.6} />
+      <meshBasicMaterial transparent opacity={0.5} depthWrite={false} />
     </instancedMesh>
   );
 }
@@ -407,7 +410,7 @@ function SpeedLines({ game }: GameProp) {
     const intensity = flying
       ? clamp((p.speed - FLIGHT.CRUISE_SPEED * 1.08) / (FLIGHT.BOOST_SPEED - FLIGHT.CRUISE_SPEED * 1.08), 0, 1)
       : 0;
-    mat.color.setScalar(intensity * 0.4);
+    mat.color.setScalar(intensity * 0.32);
     mesh.visible = intensity > 0.01;
     if (!mesh.visible) return;
 

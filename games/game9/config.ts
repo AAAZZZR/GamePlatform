@@ -182,7 +182,7 @@ const OPENING_WAVES: Omit<WaveSpec, 'hpMult' | 'turnMult'>[] = [
   { kinds: ['scout', 'scout', 'scout'], concurrent: 2 },
   { kinds: ['scout', 'fighter', 'scout'], concurrent: 2 },
   { kinds: ['fighter', 'scout', 'fighter', 'scout'], concurrent: 2 },
-  { kinds: ['fighter', 'fighter', 'ace'], concurrent: 3 },
+  { kinds: ['fighter', 'fighter', 'ace'], concurrent: 2 },
 ];
 
 export function getWaveSpec(wave: number): WaveSpec {

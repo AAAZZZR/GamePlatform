@@ -340,7 +340,7 @@ function DebriefStrip({ data }: { data: Debrief }) {
     ['WAVE', `${data.wave}`],
     ['KILLS', `${data.kills}`],
     ['ACCURACY', `${Math.round(data.accuracy * 100)}%`],
-    ['BEST STREAK', data.bestStreak > 1 ? `×${data.bestStreak}` : '—'],
+    ['BEST STREAK', data.bestStreak > 1 ? `${data.bestStreak}` : '—'],
   ];
   return (
     <div className="absolute left-0 right-0 flex justify-center pointer-events-none select-none" style={{ bottom: '8%', zIndex: 45 }}>
