@@ -1,21 +1,37 @@
-// app/page.tsx
+// app/page.tsx — 電腦端：大廳（QR code、選遊戲）和遊戲畫面
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
-import { useSocketConnection } from '@/hooks/useSocketConnection';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useHostLink } from '@/hooks/useHostLink';
+import type { HostSnapshot } from '@/lib/peer/hostLink';
 import Lobby from '@/components/Lobby';
 import GameShell from '@/platform/GameShell';
+import { isGameId } from '@/games/registry';
 import { GameId, GameMode, PlayerNumber } from '@/types/game';
 import { initAudio, startBgm, stopBgm } from '@/platform/audio';
 
+function SignalBanner({ snapshot }: { snapshot: HostSnapshot }) {
+  let text: string | null = null;
+  if (snapshot.signal === 'connecting' || snapshot.signal === 'reconnecting') {
+    text = 'Connecting to server… phones can join once connected.';
+  } else if (snapshot.stopReason === 'daily-limit') {
+    text = 'Daily connection limit reached. New phones can join again tomorrow.';
+  } else if (snapshot.stopReason === 'replaced') {
+    text = 'This room was opened somewhere else. Refresh the page to start a new room.';
+  }
+  if (!text) return null;
+  return (
+    <div className="fixed top-0 inset-x-0 z-[100] bg-amber-500/90 text-black text-center text-sm font-bold py-1.5">
+      {text}
+    </div>
+  );
+}
+
 export default function Home() {
-  const { socket, joinLink, isControllerConnected, roomId } = useSocketConnection();
+  const { link, snapshot } = useHostLink();
   const [currentView, setCurrentView] = useState<GameId>('LOBBY');
   const [audioReady, setAudioReady] = useState(false);
   const [desktopTilt, setDesktopTilt] = useState({ x: 0, y: 0 });
-
-  // Multiplayer state
   const [mode, setMode] = useState<GameMode | null>(null);
-  const [connectedPlayers, setConnectedPlayers] = useState<Map<string, PlayerNumber>>(new Map());
 
   // 首次互動解鎖 AudioContext（瀏覽器政策需要 user gesture）
   useEffect(() => {
@@ -42,68 +58,74 @@ export default function Home() {
   }, [currentView, audioReady]);
 
   useEffect(() => {
-    if (!socket) return;
-    socket.on('game-changed', (gameId: GameId) => {
+    link?.setMode(mode ?? 'solo');
+  }, [link, mode]);
+
+  const selectGame = useCallback(
+    (gameId: GameId) => {
       setCurrentView(gameId);
-    });
-    // Listen to gyro data for tilt ball in lobby
-    const handleGyro = (data: any) => {
-      setDesktopTilt({
-        x: Math.max(-1, Math.min(1, (data.gamma ?? 0) / 30)),
-        y: Math.max(-1, Math.min(1, (data.beta ?? 0) / 30)),
-      });
-    };
-    socket.on('update-game-state', handleGyro);
+      link?.broadcast({ type: 'game-changed', gameId });
+    },
+    [link],
+  );
 
-    // Listen for connected-players updates (from multiplayer hook, when available)
-    const handlePlayersUpdate = (players: Record<string, PlayerNumber>) => {
-      setConnectedPlayers(new Map(Object.entries(players)));
-    };
-    socket.on('players-updated', handlePlayersUpdate);
-
-    return () => {
-      socket.off('game-changed');
-      socket.off('update-game-state', handleGyro);
-      socket.off('players-updated', handlePlayersUpdate);
-    };
-  }, [socket]);
-
-  // When mode changes, notify the server (if the hook supports it)
+  // 大廳的光球跟著手機傾斜；進遊戲後不更新，避免每秒 20 次重繪整頁
+  const inLobbyRef = useRef(true);
   useEffect(() => {
-    if (!socket || !roomId || mode === null) return;
-    socket.emit('set-mode', { roomId, mode });
-  }, [socket, roomId, mode]);
+    inLobbyRef.current = currentView === 'LOBBY';
+  }, [currentView]);
 
-  if (!socket) {
+  useEffect(() => {
+    if (!link) return;
+    return link.onMessage(message => {
+      if (message.type === 'select-game') {
+        if (isGameId(message.gameId)) {
+          selectGame(message.gameId);
+        } else {
+          console.warn('[host] phone asked for unknown game', message.gameId);
+        }
+      } else if (message.type === 'gyro' && inLobbyRef.current) {
+        setDesktopTilt({
+          x: Math.max(-1, Math.min(1, message.gamma / 30)),
+          y: Math.max(-1, Math.min(1, message.beta / 30)),
+        });
+      }
+    });
+  }, [link, selectGame]);
+
+  const players = snapshot?.players;
+  const connectedPlayers = useMemo(
+    () => new Map<string, PlayerNumber>((players ?? []).map(n => [`p${n}`, n])),
+    [players],
+  );
+
+  if (!link || !snapshot) {
     return <div className="h-screen bg-black text-white flex items-center justify-center">Initializing System...</div>;
   }
 
-  // Game View — GameShell 統一管理
   if (currentView !== 'LOBBY') {
     return (
-      <GameShell
-        gameId={currentView}
-        socket={socket}
-        roomId={roomId}
-        onExit={() => {
-          socket.emit('select-game', { roomId, gameId: 'LOBBY' });
-        }}
-      />
+      <>
+        <SignalBanner snapshot={snapshot} />
+        <GameShell gameId={currentView} link={link} mode={mode ?? 'solo'} onExit={() => selectGame('LOBBY')} />
+      </>
     );
   }
 
-  // Lobby View
   return (
-    <Lobby
-      joinLink={joinLink}
-      isControllerConnected={isControllerConnected}
-      tilt={desktopTilt}
-      onSelectGame={(gameId) => {
-        socket.emit('select-game', { roomId, gameId });
-      }}
-      mode={mode}
-      onModeSelect={setMode}
-      connectedPlayers={connectedPlayers}
-    />
+    <>
+      <SignalBanner snapshot={snapshot} />
+      <Lobby
+        joinLink={snapshot.joinLink}
+        isControllerConnected={snapshot.players.length > 0}
+        tilt={desktopTilt}
+        onSelectGame={gameId => {
+          if (isGameId(gameId)) selectGame(gameId);
+        }}
+        mode={mode}
+        onModeSelect={setMode}
+        connectedPlayers={connectedPlayers}
+      />
+    </>
   );
 }

@@ -1,15 +1,12 @@
 // games/game5/MobileController.tsx — Tilt to Live Mobile Controller
 'use client';
 import React, { useState } from 'react';
-import { Socket } from 'socket.io-client';
 
 interface Props {
-  socket: Socket | null;
-  roomId: string | null;
   sendAction?: (action: string) => void;
 }
 
-export default function TiltToLiveMobileController({ socket, roomId, sendAction }: Props) {
+export default function TiltToLiveMobileController({ sendAction }: Props) {
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
 

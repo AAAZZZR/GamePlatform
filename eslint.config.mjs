@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // wrangler types 產生的檔案
+    "worker/worker-configuration.d.ts",
+    ".wrangler/**",
   ]),
 ]);
 

@@ -1,12 +1,13 @@
 // games/registry.ts
 import { GameEntry } from '@/platform/types';
+import type { GameId, GamePlayId } from '@/types/game';
 
 import TiltToLive from './game5';
 import TiltToLiveMobile from './game5/MobileController';
 import SkyFighter from './game9';
 import SkyFighterMobile from './game9/MobileController';
 
-export const GAME_REGISTRY: Record<string, GameEntry> = {
+export const GAME_REGISTRY: Record<GamePlayId, GameEntry> = {
   game5: {
     name: 'Tilt to Live',
     description: 'Tilt to dodge red dots. Collect powerups to destroy them. Survive!',
@@ -22,3 +23,8 @@ export const GAME_REGISTRY: Record<string, GameEntry> = {
     mobile: SkyFighterMobile,
   },
 };
+
+/** 手機送來的 gameId 要先確認是認得的畫面 */
+export function isGameId(value: string): value is GameId {
+  return value === 'LOBBY' || Object.hasOwn(GAME_REGISTRY, value);
+}

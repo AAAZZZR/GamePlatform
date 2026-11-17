@@ -1,23 +1,16 @@
-// states/Gyro_states.ts
+// states/Gyro_states.ts — 手機端：讀陀螺儀、校正中心、每 50ms 送一次給電腦
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Socket } from 'socket.io-client';
-import { GyroData } from '@/types/game';
 
 const DIR_X = 1;
 const DIR_Y = -1;
 const EMIT_INTERVAL = 50;
 
-/**
- * sendGyro: either a P2P DataChannel sender or the socket emit.
- * Provided by useMobileSocket's `sendGyro` helper.
- */
 export type GyroMode = 'natural' | 'flat';
 
-export function useGyroController(
-  socket: Socket | null,
-  roomId: string | null,
-  sendGyroOverride?: (data: GyroData) => void
-) {
+type GyroSender = (beta: number, gamma: number) => void;
+
+/** sendGyro 要是穩定的函式（useCallback），null 代表還沒連上、先不送 */
+export function useGyroController(sendGyro: GyroSender | null) {
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [debug, setDebug] = useState<string>('Init...');
   const [gyroMode, setGyroMode] = useState<GyroMode>('natural');
@@ -28,17 +21,14 @@ export function useGyroController(
   const lastRawData = useRef({ beta: 0, gamma: 0 });
   const lastEmitTime = useRef(0);
 
+  /** 以現在的手機角度當中心 */
   const handleCalibrate = useCallback(() => {
     offsetRef.current = {
       beta: lastRawData.current.beta,
-      gamma: lastRawData.current.gamma
+      gamma: lastRawData.current.gamma,
     };
-    if (socket && roomId) {
-      socket.emit('reset-position', { roomId });
-    }
     if (navigator.vibrate) navigator.vibrate(50);
-    alert('Center Reset');
-  }, [socket, roomId]);
+  }, []);
 
   const switchGyroMode = useCallback((mode: GyroMode) => {
     setGyroMode(mode);
@@ -48,29 +38,33 @@ export function useGyroController(
       // Natural: recalibrate to current hand position
       offsetRef.current = {
         beta: lastRawData.current.beta,
-        gamma: lastRawData.current.gamma
+        gamma: lastRawData.current.gamma,
       };
     }
     if (navigator.vibrate) navigator.vibrate(30);
   }, []);
 
   const requestPermission = useCallback(async () => {
-    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-      try {
-        const response = await (DeviceOrientationEvent as any).requestPermission();
-        if (response === 'granted') {
-          setPermissionGranted(true);
-        } else {
-          alert('Permission denied');
-        }
-      } catch (e) { console.error(e); }
-    } else {
+    const orientation = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
+    if (typeof orientation.requestPermission !== 'function') {
       setPermissionGranted(true);
+      return;
     }
-  }, [handleCalibrate]);
+    try {
+      const response = await orientation.requestPermission();
+      if (response === 'granted') {
+        setPermissionGranted(true);
+      } else {
+        alert('Gyroscope permission denied. Allow motion access to play.');
+      }
+    } catch (error) {
+      console.error('[gyro] permission request failed', error);
+      alert('Could not request gyroscope permission.');
+    }
+  }, []);
 
   useEffect(() => {
-    if (!socket || !roomId || !permissionGranted) return;
+    if (!permissionGranted) return;
 
     const handleOrientation = (e: DeviceOrientationEvent) => {
       const now = Date.now();
@@ -81,24 +75,11 @@ export function useGyroController(
       if (now - lastEmitTime.current < EMIT_INTERVAL) return;
       lastEmitTime.current = now;
 
-      const deltaBeta = rawBeta - offsetRef.current.beta;
-      const deltaGamma = rawGamma - offsetRef.current.gamma;
+      const gameX = (rawBeta - offsetRef.current.beta) * DIR_X;
+      const gameY = (rawGamma - offsetRef.current.gamma) * DIR_Y;
 
-      const gameX = deltaBeta * DIR_X;
-      const gameY = deltaGamma * DIR_Y;
-
-      const payload: GyroData = {
-        alpha: e.alpha,
-        beta: gameY,
-        gamma: gameX
-      };
-
-      // Use P2P DataChannel if available, otherwise fall back to Socket.IO
-      if (sendGyroOverride) {
-        sendGyroOverride(payload);
-      } else {
-        socket.emit('gyro-data', { roomId, data: payload });
-      }
+      // 電腦端：gamma → move.x，beta → move.y
+      sendGyro?.(gameY, gameX);
 
       // Normalized tilt for indicator ball (-1 to 1)
       setTilt({
@@ -109,11 +90,10 @@ export function useGyroController(
     };
 
     window.addEventListener('deviceorientation', handleOrientation);
-
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
     };
-  }, [socket, roomId, permissionGranted, sendGyroOverride]);
+  }, [permissionGranted, sendGyro]);
 
   return {
     permissionGranted,

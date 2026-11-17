@@ -1,12 +1,11 @@
 // platform/GameShell.tsx — 遊戲外殼
-// 統一管理：輸入正規化、分數/狀態、UI 覆蓋層、設定面板
+// 統一管理：輸入正規化、分數/狀態、UI 覆蓋層、設定面板、把遊戲狀態同步給手機
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Socket } from 'socket.io-client';
 import { GAME_REGISTRY } from '@/games/registry';
-import { GameSettings } from '@/types/game';
-import type { GameMode } from '@/types/game';
+import type { HostLink } from '@/lib/peer/hostLink';
+import type { GameMode, GamePlayId, GameSettings } from '@/types/game';
 import { useNormalizedInput, useMultiplayerInput } from './useNormalizedInput';
 import { DEFAULT_GAME_SETTINGS } from './input';
 import type { GameStatus } from './types';
@@ -15,14 +14,13 @@ import GameOverlay from '@/components/GameOverlay';
 import { sfx } from '@/platform/audio';
 
 interface GameShellProps {
-  gameId: string;
-  socket: Socket;
-  roomId: string;
-  mode?: GameMode;  // 'solo' | 'multi', default 'solo'
+  gameId: GamePlayId;
+  link: HostLink;
+  mode?: GameMode;
   onExit: () => void;
 }
 
-export default function GameShell({ gameId, socket, roomId, mode = 'solo', onExit }: GameShellProps) {
+export default function GameShell({ gameId, link, mode = 'solo', onExit }: GameShellProps) {
   const [gameStatus, setGameStatus] = useState<GameStatus>('READY');
   const [score, setScore] = useState(0);
   const [settings, setSettings] = useState<GameSettings>(DEFAULT_GAME_SETTINGS);
@@ -39,19 +37,13 @@ export default function GameShell({ gameId, socket, roomId, mode = 'solo', onExi
   }, [gameStatus]);
 
   // 統一輸入（gyro + 按鈕 → NormalizedInput ref）
-  // Solo mode: single inputRef; Multi mode: Map of player refs
-  const inputRef = useNormalizedInput(socket, settings);
-  const multiInputRefs = useMultiplayerInput(
-    mode === 'multi' ? socket : null,
-    settings
-  );
+  const inputRef = useNormalizedInput(mode === 'solo' ? link : null, settings);
+  const multiInputRefs = useMultiplayerInput(mode === 'multi' ? link : null, settings);
 
   // 同步遊戲狀態到手機端
   useEffect(() => {
-    if (socket && roomId) {
-      socket.emit('sync-game-status', { roomId, status: gameStatus });
-    }
-  }, [socket, roomId, gameStatus]);
+    link.broadcast({ type: 'game-status', status: gameStatus });
+  }, [link, gameStatus]);
 
   const handleRestart = () => {
     setRestartKey(k => k + 1);
@@ -59,10 +51,7 @@ export default function GameShell({ gameId, socket, roomId, mode = 'solo', onExi
     // 不設 gameStatus — 讓新掛載的遊戲元件自己回報初始狀態
   };
 
-  const game = GAME_REGISTRY[gameId];
-  if (!game) return null;
-
-  const GameComponent = game.desktop;
+  const GameComponent = GAME_REGISTRY[gameId].desktop;
 
   return (
     <div className="relative w-full h-full">
@@ -79,27 +68,16 @@ export default function GameShell({ gameId, socket, roomId, mode = 'solo', onExi
       {/* 狀態覆蓋層（Ready / Game Over / Paused） */}
       <GameOverlay status={gameStatus} score={score} />
 
-      {/* 遊戲本體 — 同時傳新舊 API，各遊戲取所需 */}
       <GameComponent
         key={`${gameId}-${restartKey}`}
-        // ─── 新 Platform API ───
         inputRef={mode === 'solo' ? inputRef : multiInputRefs.get(1)}
         {...(mode === 'multi' ? { inputRefs: multiInputRefs } : {})}
+        paused={gameStatus === 'PAUSED'}
         callbacks={{
           onScoreChange: setScore,
           onStatusChange: setGameStatus,
           onExit,
         }}
-        // ─── 舊 Legacy API（games 2-5 用） ───
-        socket={socket}
-        roomId={roomId}
-        paused={gameStatus === 'PAUSED'}
-        onPause={() => setGameStatus('PAUSED')}
-        onResume={() => setGameStatus('PLAYING')}
-        onScoreChange={setScore}
-        onStatusChange={setGameStatus}
-        settings={settings}
-        onExit={onExit}
       />
     </div>
   );

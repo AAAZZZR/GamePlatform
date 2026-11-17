@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gameplatform",
+  "main": "worker/index.ts",
+  // >= 2026-04-07 才會自動回 WebSocket Close frame（worker/room.ts 依賴這個行為）
+  "compatibility_date": "2026-10-01",
+  // 只走 game.tryit.wtf（tryit.wtf 在同一個 Cloudflare 帳號），不開 workers.dev 網址
+  "routes": [{ "pattern": "game.tryit.wtf", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  // 網頁是 next build 輸出的靜態檔，免費、不叫醒 Worker；只有 /ws（沒有對應檔案）會進 Worker
+  "assets": {
+    "directory": "./out",
+    "not_found_handling": "404-page"
+  },
+  "durable_objects": {
+    "bindings": [
+      // 一個房間一個實例，只負責牽線
+      { "name": "ROOMS", "class_name": "SignalRoom" },
+      // 全站每日連線上限，只有一個實例
+      { "name": "BUDGET", "class_name": "DailyBudget" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SignalRoom", "DailyBudget"] }],
+  // 限流編號整個 Cloudflare 帳號共用；VideoSaas 用 83xx，這個專案用 84xx
+  "ratelimits": [
+    // 牽線連線：每個 IP 每 60 秒 10 條（數字也寫在 lib/signal.ts 的 LIMITS，改的時候兩邊一起改）
+    { "name": "RL_CONNECT", "namespace_id": "8401", "simple": { "limit": 10, "period": 60 } }
+  ],
+  "vars": {
+    // 全站每天最多幾條牽線連線進得了房間（保險絲），UTC 0 點重置
+    "DAILY_CONNECTION_LIMIT": "2000"
+  }
+}

@@ -1,16 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Socket } from 'socket.io-client';
 
 interface MobileGameOverlayProps {
-    socket: Socket | null;
-    roomId: string | null;
     status: string; // 'READY', 'PLAYING', 'GAME_OVER', ...
-    sendAction?: (action: string) => void;
-    onRestart?: () => void;
-    onExit?: () => void;
+    sendAction: (action: string) => void;
+    /** 以手機現在的角度當中心 */
+    onRecenter: () => void;
+    onBackToLobby: () => void;
 }
 
-export default function MobileGameOverlay({ socket, roomId, status, sendAction, onRestart, onExit }: MobileGameOverlayProps) {
+export default function MobileGameOverlay({ status, sendAction, onRecenter, onBackToLobby }: MobileGameOverlayProps) {
     const [showSettings, setShowSettings] = useState(false);
     const [isReady, setIsReady] = useState(false);
     const [countdown, setCountdown] = useState<number | null>(null);
@@ -47,13 +45,6 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
         setCountdown(3);
     };
 
-    const handleResetCenter = () => {
-        if (socket && roomId) {
-            socket.emit('reset-position', { roomId });
-            if (navigator.vibrate) navigator.vibrate(50);
-        }
-    };
-
     // Countdown Logic
     useEffect(() => {
         if (countdown === null) return;
@@ -62,11 +53,9 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
             return () => clearTimeout(timer);
         } else {
             setCountdown(null);
-            if (sendAction) {
-                sendAction('start-game');
-            }
+            sendAction('start-game');
         }
-    }, [countdown, socket, roomId]);
+    }, [countdown, sendAction]);
 
 
     // --- Render ---
@@ -79,7 +68,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
                 <div className="flex flex-col gap-4 w-64">
                     <button
                         onClick={() => {
-                            if (sendAction) sendAction('restart-game');
+                            sendAction('restart-game');
                             // Local ready state reset handled by useEffect
                         }}
                         className="w-full py-4 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold rounded-lg uppercase tracking-widest transition-all active:scale-95"
@@ -87,9 +76,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
                         Restart
                     </button>
                     <button
-                        onClick={() => {
-                            if (socket && roomId) socket.emit('select-game', { roomId, gameId: 'LOBBY' });
-                        }}
+                        onClick={onBackToLobby}
                         className="w-full py-4 bg-red-600/80 hover:bg-red-600 text-white font-bold rounded-lg uppercase tracking-widest transition-all active:scale-95"
                     >
                         Back to Lobby
@@ -114,7 +101,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
                 </button>
 
                 <button
-                    onClick={handleResetCenter}
+                    onClick={onRecenter}
                     className="px-6 py-2 bg-white/5 border border-white/10 text-gray-400 text-sm font-bold rounded-full hover:bg-white/10 active:scale-95 transition-all"
                 >
                     RESET CENTER
@@ -145,11 +132,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
                 onClick={() => {
                     const newShow = !showSettings;
                     setShowSettings(newShow);
-                    if (newShow) {
-                        if (sendAction) sendAction('pause');
-                    } else {
-                        if (sendAction) sendAction('resume');
-                    }
+                    sendAction(newShow ? 'pause' : 'resume');
                 }}
                 className="absolute top-6 left-6 p-4 bg-white/10 rounded-full text-white/70 hover:bg-white/20 active:scale-95 backdrop-blur-sm z-30"
             >
@@ -166,12 +149,9 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
 
                     <button
                         onClick={() => {
-                            handleResetCenter();
+                            onRecenter();
                             setShowSettings(false);
-                            // Note: Assuming we want to close and resume or stay paused? 
-                            // Current logic mostly resumes on close unless we explicitly just close. 
-                            // Original code: closed implies resume.
-                            if (sendAction) sendAction('resume');
+                            sendAction('resume');
                         }}
                         className="w-full py-3 bg-cyan-600/30 border border-cyan-500/50 rounded text-xs font-bold text-cyan-300 hover:bg-cyan-600/50 uppercase"
                     >
@@ -182,7 +162,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
 
                     <button
                         onClick={() => {
-                            if (sendAction) sendAction('resume');
+                            sendAction('resume');
                             setShowSettings(false);
                         }}
                         className="w-full py-3 bg-green-600/30 border border-green-500/50 rounded text-xs font-bold text-green-300 hover:bg-green-600/50 uppercase"
@@ -191,9 +171,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
                     </button>
 
                     <button
-                        onClick={() => {
-                            if (socket && roomId) socket.emit('select-game', { roomId, gameId: 'LOBBY' });
-                        }}
+                        onClick={onBackToLobby}
                         className="w-full py-3 bg-red-600/20 border border-red-500/50 rounded text-xs font-bold text-red-400 hover:bg-red-600/50 uppercase"
                     >
                         EXIT TO LOBBY
@@ -201,7 +179,7 @@ export default function MobileGameOverlay({ socket, roomId, status, sendAction, 
 
                     <button
                         onClick={() => {
-                            if (sendAction) sendAction('resume');
+                            sendAction('resume');
                             setShowSettings(false);
                         }}
                         className="w-full py-3 bg-white/10 rounded text-xs font-bold uppercase hover:bg-white/20"

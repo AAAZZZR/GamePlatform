@@ -2,7 +2,6 @@
 'use client';
 
 import React, { useEffect, useState, useRef, useCallback, MutableRefObject } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
 import { sfx } from '@/platform/audio';
 
@@ -174,7 +173,7 @@ function spawnParticles(x: number, y: number, color: string, count: number = CFG
     const angle = Math.random() * Math.PI * 2;
     const speed = Math.random() * 3 + 1.5;
     return {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       x, y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
@@ -332,7 +331,7 @@ function useGameLogic(
             // Add some spread so they don't all converge on exact same point
             const spread = (Math.random() - 0.5) * 0.6;
             enemies.push({
-              id: uuidv4(),
+              id: crypto.randomUUID(),
               x: pos.x, y: pos.y,
               vx: Math.cos(angle + spread),
               vy: Math.sin(angle + spread),
@@ -370,7 +369,7 @@ function useGameLogic(
           }
           const pos = randomArenaPosition(w, h);
           powerups.push({
-            id: uuidv4(),
+            id: crypto.randomUUID(),
             x: pos.x, y: pos.y,
             type,
             active: true,
@@ -495,7 +494,7 @@ function useGameLogic(
                 for (let i = 0; i < CFG.MISSILE_COUNT; i++) {
                   const angle = (Math.PI * 2 * i) / CFG.MISSILE_COUNT;
                   missiles.push({
-                    id: uuidv4(),
+                    id: crypto.randomUUID(),
                     x: px, y: py,
                     vx: Math.cos(angle) * CFG.MISSILE_SPEED,
                     vy: Math.sin(angle) * CFG.MISSILE_SPEED,

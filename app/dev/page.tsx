@@ -4,7 +4,7 @@
 
 import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { GAME_REGISTRY } from '@/games/registry';
+import { GAME_REGISTRY, isGameId } from '@/games/registry';
 import { applyAction, DEFAULT_GAME_SETTINGS, emptyInput, gyroToMove } from '@/platform/input';
 import type { NormalizedInput } from '@/platform/types';
 import type { GameStatus } from '@/types/game';
@@ -31,7 +31,7 @@ const TILT_DEG_PER_SEC = 240;
 
 function DevPlay() {
   const gameId = useSearchParams().get('game') ?? '';
-  const game = GAME_REGISTRY[gameId];
+  const game = isGameId(gameId) && gameId !== 'LOBBY' ? GAME_REGISTRY[gameId] : undefined;
 
   const inputRef = useRef<NormalizedInput>(emptyInput());
   const [status, setStatus] = useState<GameStatus>('READY');

@@ -21,11 +21,8 @@ interface LobbyProps {
 
 // ─── 遊戲分類標籤 ──────────────────────────────────
 const CATEGORIES: Record<string, string[]> = {
-  'Action':  ['game1', 'game5', 'game10'],
-  'Arcade':  ['game2', 'game7'],
-  'Racing':  ['game3', 'game4'],
-  'Classic': ['game6'],
-  'Flight':  ['game8', 'game9'],
+  'Action':  ['game5'],
+  'Flight':  ['game9'],
 };
 
 function getCategoryFor(id: string) {

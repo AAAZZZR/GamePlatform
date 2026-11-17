@@ -5,32 +5,31 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "NODE_ENV=production ts-node --project tsconfig.server.json server.ts"
+    "preview": "next build && wrangler dev",
+    "deploy": "next build && wrangler deploy",
+    "check": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.worker.json",
+    "lint": "eslint .",
+    "types": "wrangler types --strict-vars=false worker/worker-configuration.d.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@types/three": "^0.183.1",
-    "express": "^5.2.1",
     "next": "^16.1.2",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3",
-    "three": "^0.183.2",
-    "uuid": "^13.0.0"
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/express": "^5.0.6",
     "@types/node": "^20.19.30",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.2",
     "tailwindcss": "^4",
-    "ts-node": "^10.9.2",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "wrangler": "^4.151.3"
   }
 }
