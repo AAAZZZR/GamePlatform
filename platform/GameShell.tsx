@@ -7,7 +7,7 @@ import { GAME_REGISTRY } from '@/games/registry';
 import type { HostLink } from '@/lib/peer/hostLink';
 import type { GameMode, GamePlayId, GameSettings } from '@/types/game';
 import { useNormalizedInput, useMultiplayerInput } from './useNormalizedInput';
-import { DEFAULT_GAME_SETTINGS } from './input';
+import { applyAction, DEFAULT_GAME_SETTINGS } from './input';
 import type { GameStatus } from './types';
 import GameSettingsPanel from '@/components/GameSettings';
 import GameOverlay from '@/components/GameOverlay';
@@ -51,6 +51,20 @@ export default function GameShell({ gameId, link, mode = 'solo', onExit }: GameS
     // 不設 gameStatus — 讓新掛載的遊戲元件自己回報初始狀態
   };
 
+  // 電腦端設定列的按鈕：開始和重來要讓遊戲自己知道（跟手機送的動作一樣），不能只改平台狀態
+  const handlePanelStatus = (next: GameStatus) => {
+    const input = mode === 'solo' ? inputRef.current : multiInputRefs.get(1)?.current;
+    if (next === 'PLAYING' && gameStatus === 'READY' && input) {
+      applyAction(input, 'start-game');
+      return;
+    }
+    if (next === 'PLAYING' && gameStatus === 'GAME_OVER' && input) {
+      applyAction(input, 'restart-game');
+      return;
+    }
+    setGameStatus(next);
+  };
+
   const GameComponent = GAME_REGISTRY[gameId].desktop;
 
   return (
@@ -59,7 +73,7 @@ export default function GameShell({ gameId, link, mode = 'solo', onExit }: GameS
       <GameSettingsPanel
         status={gameStatus}
         settings={settings}
-        onStatusChange={setGameStatus}
+        onStatusChange={handlePanelStatus}
         onSettingsChange={setSettings}
         onRestart={handleRestart}
         onBackToLobby={onExit}
