@@ -4,8 +4,10 @@
   "main": "worker/index.ts",
   // >= 2026-04-07 才會自動回 WebSocket Close frame（worker/room.ts 依賴這個行為）
   "compatibility_date": "2026-10-01",
-  // 只走 game.tryit.wtf（tryit.wtf 在同一個 Cloudflare 帳號），不開 workers.dev 網址
-  "routes": [{ "pattern": "game.tryit.wtf", "custom_domain": true }],
+  // 2026-11-17 起 game.tryit.wtf 給 v2（GamePlatform-v2）用，這版暫時不綁網域、不開 workers.dev 網址（收不到流量、不花錢）。
+  // 要再上線：在這裡加一個新的網域，例如 [{ "pattern": "party.tryit.wtf", "custom_domain": true }]。
+  // 不要填回 game.tryit.wtf，部署時會把網域從 v2 搶回來。
+  "routes": [],
   "workers_dev": false,
   "preview_urls": false,
   // 網頁是 next build 輸出的靜態檔，免費、不叫醒 Worker；只有 /ws（沒有對應檔案）會進 Worker

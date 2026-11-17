@@ -1,7 +1,17 @@
-# GyroPlay（game.tryit.wtf）
+# GyroPlay（v1，目前沒有上線）
 
 手機當手把的體感小遊戲平台。電腦顯示遊戲，手機掃 QR code 後用陀螺儀 + 螢幕按鈕控制。
 GitHub `AAAZZZR/GamePlatform`，本機放在 `Desktop\tryit\gameplatform`（跟同網域的 VideoSaas 並排）。
+
+## 現況（2026-11-17）
+
+- game.tryit.wtf 改由單機版 v2 提供：GitHub `AAAZZZR/GamePlatform-v2`，本機 `Desktop\tryit\gameplatform-v2`。擁有者之後還想回來做這版，程式保留原樣。
+- 這版的 Worker（`gameplatform`）還在 Cloudflare 上，但 `wrangler.jsonc` 的 `routes` 已清空，沒有網域，也沒有 workers.dev 網址。要再上線得先選一個新網域，不要填回 game.tryit.wtf。
+- **停用的原因：擁有者自己家裡就連不上。** 實測結果：
+  - 家裡網路在電信商的 CGNAT 後面，第二跳是 `100.104.144.1`。
+  - 同一台電腦上兩個連線只交換 srflx 候選（模擬區網直連失敗）時，ICE 會失敗，代表電信商的 NAT 不做 hairpin。所以手機和電腦在同一個 Wi-Fi 下，只能靠瀏覽器用 mDNS（`.local` 候選）找到對方直連，而擁有者的手機這一步沒成功。
+  - 電腦的 Wi-Fi 是「公用」網路設定檔，Windows 防火牆沒有放行 Chrome 的入站 UDP（只有 mDNS 5353）。手機主動打進來的直連會被擋，要電腦先解析到手機的 `.local` 才通。
+- 回來做這版時，要先解決「純 P2P 在 CGNAT 和 mDNS 失靈的網路打不通」。當時評估的方案是：直連不通才改走 Cloudflare Realtime TURN 中繼。它不是 Workers，每月前 1000 GB 免費，之後 $0.05/GB；這個遊戲一人一小時約 10 MB。擁有者還沒決定要不要用。
 
 ## 架構
 
@@ -41,7 +51,7 @@ Workers 帳號層的「支出上限」管不到 Durable Objects，所以靠上�
 - `npm run preview`：`next build` + `wrangler dev`，本機完整跑一次（含 Durable Objects、限流模擬）。
 - `npm run check`：前端與 Worker 型別檢查。`npm run lint`：ESLint。
 - `npm run types`：改了 `wrangler.jsonc` 後重新產生 `worker/worker-configuration.d.ts`。
-- `npm run deploy`：build 並部署到 game.tryit.wtf（要先 `npx wrangler login`）。**push 到 GitHub 不會自動部署。**
+- `npm run deploy`：build 並部署（要先 `npx wrangler login`）。目前 `routes` 是空的，部署了也沒有網域；見上面「現況」。**push 到 GitHub 不會自動部署。**
 - 真的手機測試要 HTTPS（陀螺儀權限需要安全連線），所以用部署後的正式站測。
 
 不寫自動化測試（擁有者規定）；驗證靠型別檢查、lint、`/dev` 試玩頁和 `npm run preview` 實際跑。
