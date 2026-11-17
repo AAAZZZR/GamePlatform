@@ -25,7 +25,7 @@ export type GameStatus = 'IDLE' | 'READY' | 'PLAYING' | 'PAUSED' | 'GAME_OVER';
 export type GameMode = 'solo' | 'multi';
 export type PlayerNumber = 1 | 2;
 
-export type GameId = 'LOBBY' | 'game1' | 'game2' | 'game3' | 'game4' | 'game5';
+export type GameId = 'LOBBY' | 'game5' | 'game9';
 
 // 2. 擴充 Socket 事件
 export interface GameStateEvent {

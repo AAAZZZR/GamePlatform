@@ -8,6 +8,7 @@ import { GAME_REGISTRY } from '@/games/registry';
 import { GameSettings } from '@/types/game';
 import type { GameMode } from '@/types/game';
 import { useNormalizedInput, useMultiplayerInput } from './useNormalizedInput';
+import { DEFAULT_GAME_SETTINGS } from './input';
 import type { GameStatus } from './types';
 import GameSettingsPanel from '@/components/GameSettings';
 import GameOverlay from '@/components/GameOverlay';
@@ -24,7 +25,7 @@ interface GameShellProps {
 export default function GameShell({ gameId, socket, roomId, mode = 'solo', onExit }: GameShellProps) {
   const [gameStatus, setGameStatus] = useState<GameStatus>('READY');
   const [score, setScore] = useState(0);
-  const [settings, setSettings] = useState<GameSettings>({ speed: 15, maxAngle: 30 });
+  const [settings, setSettings] = useState<GameSettings>(DEFAULT_GAME_SETTINGS);
   const [restartKey, setRestartKey] = useState(0);
 
   // 通用音效：開始 / Game Over
