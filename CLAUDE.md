@@ -52,4 +52,8 @@ Workers 帳號層的「支出上限」管不到 Durable Objects，所以靠上�
 - `inputRef.current.move` 是 ±15 的傾斜量；`actions` 有按住型（`xxx-start`/`xxx-end`）和單次型（`start-game` 等，約 150ms 後自動清掉）。換算在 `platform/input.ts`。
 - 新增遊戲：`types/game.ts` 的 `GamePlayId` 和 `games/registry.ts` 一起改。
 - 2026-11-17 只留 Tilt to Live（game5）和 Sky Fighter（game9），其他 8 個下架；要找回去看 commit `33a2af5`。
+- 同一天兩個遊戲都改版過，結構都是「數值設定 / 純邏輯 / 繪製 / 音效 / index 接平台」分檔，遊戲狀態放 ref、每幀原地更新，不靠 React state 重繪：
+  - Tilt to Live：`config.ts`、`engine.ts`、`render.ts`（canvas 2D）、`sounds.ts`。最佳紀錄存 localStorage `gyroplay.game5.best`。
+  - Sky Fighter：`config.ts`、`sim.ts`、`scene.tsx`（R3F）、`hud.tsx`、`sound.ts`。刻意拿掉「機頭朝下碰海就死」：手機陀螺儀一飄就會無辜墜海，改成越接近海面越拉平。
 - 多人模式（Lobby 的 Multiplayer）還沒完成，大廳選了會顯示 Coming Soon；連線層已支援最多 2 支手機。
+- 目前只有手機 → 電腦的訊息，沒有電腦 → 手機的遊戲事件，所以受傷、撿道具時手機不會震動（只有按鈕本身的震動）。
