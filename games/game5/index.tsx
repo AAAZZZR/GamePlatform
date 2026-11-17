@@ -1,984 +1,299 @@
-// games/game5/index.tsx — Tilt to Live (Arena Survival)
+// games/game5/index.tsx — Tilt to Live（電腦端）
+// 傾斜手機控制箭頭，躲開追過來的紅點，撞道具球反擊。
+// 遊戲狀態放在 effect 裡的 World（engine.ts），每幀畫到 canvas（render.ts）；
+// React state 只放很少變的東西（READY / PLAYING / GAME_OVER、結算），不會每幀重繪元件。
 'use client';
 
-import React, { useEffect, useState, useRef, useCallback, MutableRefObject } from 'react';
-import { v4 as uuidv4 } from 'uuid';
-import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
-import { sfx } from '@/platform/audio';
+import React, { useEffect, useRef, useState } from 'react';
+import type { DesktopGameProps } from '@/platform/types';
+import { POWERUP_ORDER, POWERUPS } from './config';
+import { createWorld, resizeWorld, startRun, updateWorld, type Phase } from './engine';
+import { createRenderCache, formatTime, renderWorld } from './render';
+import { sounds } from './sounds';
+import { PowerupBadge } from './PowerupIcon';
 
-// ==========================================
-// 1. Configuration
-// ==========================================
-const CFG = {
-  PLAYER_SIZE: 18,
-  PLAYER_HITBOX: 10,
-  ENEMY_SIZE: 14,
-  ENEMY_HITBOX: 10,
-  ENEMY_BASE_SPEED: 0.6,
-  ENEMY_SPEED_RAMP: 0.12,
-  INITIAL_SPAWN_INTERVAL: 2200,
-  MIN_SPAWN_INTERVAL: 400,
-  SPAWN_INTERVAL_RAMP: 180,
-  INITIAL_WAVE_SIZE: 2,
-  MAX_WAVE_SIZE: 12,
-  POWERUP_SIZE: 20,
-  POWERUP_HITBOX: 16,
-  POWERUP_SPAWN_INTERVAL: 6000,
-  POWERUP_MIN_INTERVAL: 3500,
-  MISSILE_SPEED: 8,
-  MISSILE_SIZE: 6,
-  MISSILE_COUNT: 10,
-  FREEZE_DURATION: 3000,
-  VORTEX_DURATION: 2000,
-  VORTEX_RADIUS: 160,
-  SPEED_BOOST_DURATION: 4000,
-  SPEED_BOOST_MULTIPLIER: 2.2,
-  BUZZSAW_DURATION: 4000,
-  BUZZSAW_RADIUS: 35,
-  NUKE_MIN_GAME_TIME: 60,
-  SCORE_PER_KILL: 10,
-  SCORE_PER_SECOND: 1,
-  DIFFICULTY_INTERVAL: 10,
-  GRID_SIZE: 50,
-  PARTICLE_COUNT: 8,
-};
+const BEST_KEY = 'gyroplay.game5.best';
+const MAX_DT = 1 / 20; // 分頁切回來或卡頓時，一幀最多模擬 50ms，避免瞬移穿牆
+const SCORE_REPORT_MS = 200; // 分數回報給平台的最短間隔（平台每次都會重繪）
+const MAX_CANVAS_PIXELS = 4_200_000; // 4K 電視上限制畫布解析度，維持 60fps
 
-// ==========================================
-// 2. Types
-// ==========================================
-type PowerupType = 'missile' | 'nuke' | 'freeze' | 'vortex' | 'speed' | 'buzzsaw';
+type UiStatus = 'READY' | 'PLAYING' | 'GAME_OVER';
 
-interface Vec2 { x: number; y: number; }
-
-interface Enemy {
-  id: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  frozen: boolean;
-  active: boolean;
+interface RunSummary {
+  time: number;
+  kills: number;
+  maxCombo: number;
+  best: number;
+  newBest: boolean;
 }
 
-interface Powerup {
-  id: string;
-  x: number;
-  y: number;
-  type: PowerupType;
-  active: boolean;
-  spawnTime: number;
+interface UiState {
+  status: UiStatus;
+  best: number;
+  summary: RunSummary | null;
 }
 
-interface Missile {
-  id: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  active: boolean;
-}
-
-interface Particle {
-  id: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  color: string;
-  size: number;
-}
-
-interface VortexEffect {
-  x: number;
-  y: number;
-  startTime: number;
-  duration: number;
-}
-
-interface FlashEffect {
-  x: number;
-  y: number;
-  startTime: number;
-  color: string;
-}
-
-interface GameState {
-  player: Vec2;
-  enemies: Enemy[];
-  powerups: Powerup[];
-  missiles: Missile[];
-  particles: Particle[];
-  status: GameStatus;
-  score: number;
-  startTime: number;
-  lastSpawnTime: number;
-  lastPowerupTime: number;
-  lastScoreTickTime: number;
-  difficultyLevel: number;
-  frozenUntil: number;
-  vortex: VortexEffect | null;
-  nukeFlash: number;
-  flashes: FlashEffect[];
-  speedBoostUntil: number;
-  buzzsawUntil: number;
-}
-
-// ==========================================
-// 3. Helpers
-// ==========================================
-const POWERUP_COLORS: Record<PowerupType, string> = {
-  missile: '#3b82f6',
-  nuke: '#eab308',
-  freeze: '#22c55e',
-  vortex: '#a855f7',
-  speed: '#f97316',
-  buzzsaw: '#ec4899',
-};
-
-const POWERUP_LABELS: Record<PowerupType, string> = {
-  missile: 'M',
-  nuke: 'N',
-  freeze: 'F',
-  vortex: 'V',
-  speed: 'S',
-  buzzsaw: 'G',
-};
-
-function dist(a: Vec2, b: Vec2): number {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function randomEdgePosition(w: number, h: number): Vec2 {
-  const side = Math.floor(Math.random() * 4);
-  const margin = 30;
-  switch (side) {
-    case 0: return { x: Math.random() * w, y: -margin }; // top
-    case 1: return { x: Math.random() * w, y: h + margin }; // bottom
-    case 2: return { x: -margin, y: Math.random() * h }; // left
-    default: return { x: w + margin, y: Math.random() * h }; // right
+function loadBest(): number {
+  try {
+    const raw = window.localStorage.getItem(BEST_KEY);
+    if (raw === null) return 0;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  } catch (err) {
+    console.warn('[TiltToLive] 讀不到最佳紀錄（localStorage 無法使用），這次從 0 開始', err);
+    return 0;
   }
 }
 
-function randomArenaPosition(w: number, h: number, margin: number = 60): Vec2 {
-  return {
-    x: margin + Math.random() * (w - margin * 2),
-    y: margin + Math.random() * (h - margin * 2),
-  };
+function saveBest(score: number): void {
+  try {
+    window.localStorage.setItem(BEST_KEY, String(score));
+  } catch (err) {
+    console.warn('[TiltToLive] 最佳紀錄存不進 localStorage', err);
+  }
 }
 
-function spawnParticles(x: number, y: number, color: string, count: number = CFG.PARTICLE_COUNT): Particle[] {
-  return Array.from({ length: count }, () => {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 3 + 1.5;
-    return {
-      id: uuidv4(),
-      x, y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
-      life: 1,
-      color,
-      size: Math.random() * 3 + 2,
-    };
-  });
+function statusForPhase(phase: Phase): UiStatus {
+  if (phase === 'ready') return 'READY';
+  if (phase === 'over') return 'GAME_OVER';
+  return 'PLAYING';
 }
 
-// ==========================================
-// 4. Game Logic Hook
-// ==========================================
-function useGameLogic(
-  inputRef: MutableRefObject<NormalizedInput>,
-  paused: boolean,
-  callbacks: GameCallbacks
-) {
-  const boundsRef = useRef({ w: 800, h: 600 });
+function padScore(score: number): string {
+  return score.toString().padStart(6, '0');
+}
 
-  useEffect(() => {
-    const update = () => {
-      boundsRef.current = { w: window.innerWidth, h: window.innerHeight };
-    };
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
-  const getInitialState = useCallback((): GameState => {
-    const { w, h } = boundsRef.current;
-    return {
-      player: { x: w / 2, y: h / 2 },
-      enemies: [],
-      powerups: [],
-      missiles: [],
-      particles: [],
-      status: 'READY',
-      score: 0,
-      startTime: 0,
-      lastSpawnTime: 0,
-      lastPowerupTime: 0,
-      lastScoreTickTime: 0,
-      difficultyLevel: 0,
-      frozenUntil: 0,
-      vortex: null,
-      nukeFlash: 0,
-      flashes: [],
-      speedBoostUntil: 0,
-      buzzsawUntil: 0,
-    };
-  }, []);
-
-  const [gameState, setGameState] = useState<GameState>(getInitialState);
-  const stateRef = useRef(gameState);
-  stateRef.current = gameState;
-
+export default function TiltToLive({ inputRef, paused, callbacks }: DesktopGameProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pausedRef = useRef(paused);
   const callbacksRef = useRef(callbacks);
-  callbacksRef.current = callbacks;
+  const [ui, setUi] = useState<UiState>({ status: 'READY', best: 0, summary: null });
 
-  // Report score / status
-  useEffect(() => { callbacksRef.current.onScoreChange(gameState.score); }, [gameState.score]);
-  useEffect(() => { callbacksRef.current.onStatusChange(gameState.status); }, [gameState.status]);
-
-  // Game Loop
   useEffect(() => {
-    let loopId: number;
-    let prevTime = performance.now();
+    pausedRef.current = paused;
+  }, [paused]);
 
-    const loop = (currentTime: number) => {
-      const dt = Math.min((currentTime - prevTime) / 16.667, 3); // normalize to ~60fps, cap at 3x
-      prevTime = currentTime;
+  useEffect(() => {
+    callbacksRef.current = callbacks;
+  }, [callbacks]);
 
-      const input = inputRef.current;
-      const s = stateRef.current;
-      const { w, h } = boundsRef.current;
+  useEffect(() => {
+    callbacksRef.current.onStatusChange(ui.status);
+  }, [ui.status]);
 
-      // ── Lifecycle actions ──
-      if (s.status === 'READY' && input.actions['start-game']) {
-        const now = Date.now();
-        setGameState(prev => ({
-          ...prev,
-          status: 'PLAYING',
-          startTime: now,
-          lastSpawnTime: now,
-          lastPowerupTime: now,
-          lastScoreTickTime: now,
-          player: { x: w / 2, y: h / 2 },
-        }));
+  // 遊戲迴圈：只在掛載時建立一次
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) {
+      console.error('[TiltToLive] 找不到 canvas 或容器，遊戲無法啟動');
+      return;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.error('[TiltToLive] 這個瀏覽器無法使用 Canvas 2D，遊戲無法啟動');
+      return;
+    }
+
+    const world = createWorld(Math.max(1, container.clientWidth), Math.max(1, container.clientHeight), loadBest());
+    const cache = createRenderCache();
+    let dpr = 1;
+
+    const resize = () => {
+      const w = Math.max(1, container.clientWidth);
+      const h = Math.max(1, container.clientHeight);
+      let ratio = Math.min(window.devicePixelRatio || 1, 2);
+      if (w * h * ratio * ratio > MAX_CANVAS_PIXELS) {
+        ratio = Math.max(0.75, Math.sqrt(MAX_CANVAS_PIXELS / (w * h)));
       }
-      if (input.actions['restart-game']) {
-        setGameState(getInitialState());
+      dpr = ratio;
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      resizeWorld(world, w, h);
+      needsRender = true; // 改尺寸會清空畫布，暫停中也要補畫一次
+    };
+    let needsRender = true;
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(container);
+
+    // 平台的一次性按鈕會維持 true 約 150ms（好幾幀），只在按下的那一刻處理一次
+    const previousActions: Record<string, boolean> = {};
+    const justPressed = (name: string): boolean => {
+      const down = inputRef.current.actions[name] === true;
+      const wasDown = previousActions[name] === true;
+      previousActions[name] = down;
+      return down && !wasDown;
+    };
+
+    let lastPhase: Phase = world.phase;
+    let lastFrame = performance.now();
+    let lastReportedScore = -1;
+    let lastScoreReport = 0;
+    let uiSynced = false;
+    let frameId = 0;
+
+    const reportScore = (now: number, force: boolean) => {
+      if (world.score === lastReportedScore) return;
+      if (!force && now - lastScoreReport < SCORE_REPORT_MS) return;
+      lastReportedScore = world.score;
+      lastScoreReport = now;
+      callbacksRef.current.onScoreChange(world.score);
+    };
+
+    const handlePhaseChange = (phase: Phase) => {
+      if (phase === 'over') {
+        const previousBest = world.best;
+        const newBest = world.score > previousBest;
+        if (newBest) {
+          world.best = world.score;
+          saveBest(world.score);
+        }
+        setUi({
+          status: 'GAME_OVER',
+          best: world.best,
+          summary: { time: world.clock, kills: world.kills, maxCombo: world.maxCombo, best: world.best, newBest },
+        });
+        return;
       }
-      if (input.actions.pause && s.status === 'PLAYING') {
+      // dying 對平台來說還是 PLAYING（爆炸演出完才 GAME_OVER）
+      if (phase !== 'dying') {
+        setUi({ status: statusForPhase(phase), best: world.best, summary: null });
+      }
+    };
+
+    const frame = (now: number) => {
+      frameId = requestAnimationFrame(frame);
+      const dt = Math.min(Math.max(0, (now - lastFrame) / 1000), MAX_DT);
+      lastFrame = now;
+      const isPaused = pausedRef.current;
+
+      if (!uiSynced) {
+        uiSynced = true;
+        setUi(prev => ({ ...prev, best: world.best }));
+      }
+
+      const startPressed = justPressed('start-game');
+      const restartPressed = justPressed('restart-game');
+      const pausePressed = justPressed('pause');
+      const resumePressed = justPressed('resume');
+
+      if (restartPressed) {
+        // 重來直接開新局（不用再回 READY 倒數一次）
+        const fromReady = world.phase === 'ready';
+        startRun(world, !fromReady);
+        // 平台只在 READY → PLAYING 時播開場音；從結束畫面直接重來由這裡補播
+        if (!fromReady) sounds.start();
+      } else if (startPressed && world.phase === 'ready') {
+        startRun(world, false);
+      }
+      if (pausePressed && !isPaused && world.phase === 'playing') {
         callbacksRef.current.onStatusChange('PAUSED');
       }
-      if (input.actions.resume) {
+      if (resumePressed && isPaused) {
         callbacksRef.current.onStatusChange('PLAYING');
       }
 
-      // ── Game update ──
-      if (s.status === 'PLAYING' && !paused) {
-        const now = Date.now();
-        const gameTime = (now - s.startTime) / 1000;
-        const diffLevel = Math.floor(gameTime / CFG.DIFFICULTY_INTERVAL);
-        const enemySpeed = (CFG.ENEMY_BASE_SPEED + diffLevel * CFG.ENEMY_SPEED_RAMP) * dt;
-        const spawnInterval = Math.max(
-          CFG.MIN_SPAWN_INTERVAL,
-          CFG.INITIAL_SPAWN_INTERVAL - diffLevel * CFG.SPAWN_INTERVAL_RAMP
-        );
-        const waveSize = Math.min(
-          CFG.MAX_WAVE_SIZE,
-          CFG.INITIAL_WAVE_SIZE + Math.floor(diffLevel * 0.6)
-        );
-        const isFrozen = now < s.frozenUntil;
-
-        // Player movement
-        const isSpeedBoosted = now < s.speedBoostUntil;
-        const speedMult = isSpeedBoosted ? CFG.SPEED_BOOST_MULTIPLIER : 1;
-        let px = s.player.x + input.move.x * dt * speedMult;
-        let py = s.player.y + input.move.y * dt * speedMult;
-        px = Math.max(CFG.PLAYER_SIZE, Math.min(w - CFG.PLAYER_SIZE, px));
-        py = Math.max(CFG.PLAYER_SIZE, Math.min(h - CFG.PLAYER_SIZE, py));
-
-        // Copy arrays
-        let enemies = [...s.enemies];
-        let powerups = [...s.powerups];
-        let missiles = [...s.missiles];
-        let particles = [...s.particles];
-        let flashes = [...s.flashes];
-        let scoreAdd = 0;
-        let gameOver = false;
-        let frozenUntil = s.frozenUntil;
-        let vortex = s.vortex;
-        let nukeFlash = s.nukeFlash;
-        let speedBoostUntil = s.speedBoostUntil;
-        let buzzsawUntil = s.buzzsawUntil;
-        const isBuzzsaw = now < buzzsawUntil;
-        let lastSpawnTime = s.lastSpawnTime;
-        let lastPowerupTime = s.lastPowerupTime;
-        let lastScoreTickTime = s.lastScoreTickTime;
-
-        // Score per second
-        if (now - lastScoreTickTime >= 1000) {
-          scoreAdd += CFG.SCORE_PER_SECOND;
-          lastScoreTickTime = now;
-        }
-
-        // Spawn enemies
-        if (now - lastSpawnTime >= spawnInterval) {
-          lastSpawnTime = now;
-          for (let i = 0; i < waveSize; i++) {
-            const pos = randomEdgePosition(w, h);
-            const angle = Math.atan2(py - pos.y, px - pos.x);
-            // Add some spread so they don't all converge on exact same point
-            const spread = (Math.random() - 0.5) * 0.6;
-            enemies.push({
-              id: uuidv4(),
-              x: pos.x, y: pos.y,
-              vx: Math.cos(angle + spread),
-              vy: Math.sin(angle + spread),
-              frozen: false,
-              active: true,
-            });
-          }
-        }
-
-        // Spawn powerups (weighted random, nuke restricted)
-        const powerupInterval = Math.max(
-          CFG.POWERUP_MIN_INTERVAL,
-          CFG.POWERUP_SPAWN_INTERVAL - diffLevel * 200
-        );
-        if (now - lastPowerupTime >= powerupInterval && powerups.filter(p => p.active).length < 3) {
-          lastPowerupTime = now;
-          // Build weighted pool
-          const pool: { type: PowerupType; weight: number }[] = [
-            { type: 'missile', weight: 20 },
-            { type: 'speed', weight: 28 },
-            { type: 'buzzsaw', weight: 15 },
-            { type: 'freeze', weight: 18 },
-            { type: 'vortex', weight: 12 },
-          ];
-          // Nuke: only after 60 seconds, low weight
-          if (gameTime >= CFG.NUKE_MIN_GAME_TIME) {
-            pool.push({ type: 'nuke', weight: 7 });
-          }
-          const totalWeight = pool.reduce((sum, p) => sum + p.weight, 0);
-          let roll = Math.random() * totalWeight;
-          let type: PowerupType = 'missile';
-          for (const entry of pool) {
-            roll -= entry.weight;
-            if (roll <= 0) { type = entry.type; break; }
-          }
-          const pos = randomArenaPosition(w, h);
-          powerups.push({
-            id: uuidv4(),
-            x: pos.x, y: pos.y,
-            type,
-            active: true,
-            spawnTime: now,
-          });
-        }
-
-        // Remove old powerups (after 10 seconds)
-        powerups = powerups.filter(p => p.active && now - p.spawnTime < 10000);
-
-        // Move enemies
-        for (const e of enemies) {
-          if (!e.active) continue;
-          if (isFrozen || e.frozen) continue;
-
-          // Vortex pull
-          if (vortex && now - vortex.startTime < vortex.duration) {
-            const d = dist(e, vortex);
-            if (d < CFG.VORTEX_RADIUS) {
-              const pull = (1 - d / CFG.VORTEX_RADIUS) * 3 * dt;
-              const angle = Math.atan2(vortex.y - e.y, vortex.x - e.x);
-              e.x += Math.cos(angle) * pull;
-              e.y += Math.sin(angle) * pull;
-              // Destroy if very close to center
-              if (d < 15) {
-                e.active = false;
-                scoreAdd += CFG.SCORE_PER_KILL;
-                particles.push(...spawnParticles(e.x, e.y, '#a855f7', 5));
-              }
-              continue;
-            }
-          }
-
-          // Normal tracking: re-target toward player
-          const angle = Math.atan2(py - e.y, px - e.x);
-          // Blend existing direction with tracking (80% track, 20% keep)
-          e.vx = e.vx * 0.2 + Math.cos(angle) * 0.8;
-          e.vy = e.vy * 0.2 + Math.sin(angle) * 0.8;
-          // Normalize
-          const len = Math.sqrt(e.vx * e.vx + e.vy * e.vy) || 1;
-          e.vx /= len;
-          e.vy /= len;
-          e.x += e.vx * enemySpeed;
-          e.y += e.vy * enemySpeed;
-        }
-
-        // Handle freeze shatter
-        if (s.frozenUntil > 0 && now >= s.frozenUntil && isFrozen === false) {
-          // Freeze just ended — shatter all frozen enemies
-          for (const e of enemies) {
-            if (e.active && e.frozen) {
-              e.active = false;
-              scoreAdd += CFG.SCORE_PER_KILL;
-              particles.push(...spawnParticles(e.x, e.y, '#22c55e', 6));
-            }
-          }
-          if (enemies.some(e => e.frozen)) {
-            sfx.explosion();
-          }
-          frozenUntil = 0;
-        }
-
-        // Apply frozen state
-        if (isFrozen) {
-          for (const e of enemies) {
-            if (e.active) e.frozen = true;
-          }
-        }
-
-        // Handle vortex expiry
-        if (vortex && now - vortex.startTime >= vortex.duration) {
-          // Kill remaining enemies near vortex
-          for (const e of enemies) {
-            if (!e.active) continue;
-            if (dist(e, vortex) < CFG.VORTEX_RADIUS * 0.5) {
-              e.active = false;
-              scoreAdd += CFG.SCORE_PER_KILL;
-              particles.push(...spawnParticles(e.x, e.y, '#a855f7', 5));
-            }
-          }
-          vortex = null;
-        }
-
-        // Move missiles
-        for (const m of missiles) {
-          if (!m.active) continue;
-          m.x += m.vx * dt;
-          m.y += m.vy * dt;
-          // Out of bounds
-          if (m.x < -20 || m.x > w + 20 || m.y < -20 || m.y > h + 20) {
-            m.active = false;
-          }
-        }
-
-        // Missile vs enemy collision
-        for (const m of missiles) {
-          if (!m.active) continue;
-          for (const e of enemies) {
-            if (!e.active) continue;
-            if (dist(m, e) < CFG.MISSILE_SIZE + CFG.ENEMY_HITBOX) {
-              m.active = false;
-              e.active = false;
-              scoreAdd += CFG.SCORE_PER_KILL;
-              sfx.explosion();
-              particles.push(...spawnParticles(e.x, e.y, '#3b82f6', 6));
-            }
-          }
-        }
-
-        // Player vs powerup collision
-        const playerPos: Vec2 = { x: px, y: py };
-        for (const p of powerups) {
-          if (!p.active) continue;
-          if (dist(playerPos, p) < CFG.PLAYER_HITBOX + CFG.POWERUP_HITBOX) {
-            p.active = false;
-            sfx.powerup();
-            flashes.push({ x: p.x, y: p.y, startTime: now, color: POWERUP_COLORS[p.type] });
-
-            switch (p.type) {
-              case 'missile': {
-                // Fire missiles outward from player
-                for (let i = 0; i < CFG.MISSILE_COUNT; i++) {
-                  const angle = (Math.PI * 2 * i) / CFG.MISSILE_COUNT;
-                  missiles.push({
-                    id: uuidv4(),
-                    x: px, y: py,
-                    vx: Math.cos(angle) * CFG.MISSILE_SPEED,
-                    vy: Math.sin(angle) * CFG.MISSILE_SPEED,
-                    active: true,
-                  });
-                }
-                break;
-              }
-              case 'nuke': {
-                sfx.crash();
-                nukeFlash = now;
-                // Destroy ALL enemies
-                for (const e of enemies) {
-                  if (e.active) {
-                    e.active = false;
-                    scoreAdd += CFG.SCORE_PER_KILL;
-                    particles.push(...spawnParticles(e.x, e.y, '#eab308', 4));
-                  }
-                }
-                break;
-              }
-              case 'freeze': {
-                frozenUntil = now + CFG.FREEZE_DURATION;
-                for (const e of enemies) {
-                  if (e.active) e.frozen = true;
-                }
-                break;
-              }
-              case 'vortex': {
-                vortex = { x: px, y: py, startTime: now, duration: CFG.VORTEX_DURATION };
-                break;
-              }
-              case 'speed': {
-                speedBoostUntil = now + CFG.SPEED_BOOST_DURATION;
-                break;
-              }
-              case 'buzzsaw': {
-                buzzsawUntil = now + CFG.BUZZSAW_DURATION;
-                sfx.crash();
-                break;
-              }
-            }
-          }
-        }
-
-        // Player vs enemy collision
-        for (const e of enemies) {
-          if (!e.active) continue;
-          const hitDist = isBuzzsaw ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_HITBOX + CFG.ENEMY_HITBOX;
-          if (dist(playerPos, e) < hitDist) {
-            if (isBuzzsaw) {
-              // Buzzsaw mode: kill enemy on contact
-              e.active = false;
-              scoreAdd += CFG.SCORE_PER_KILL;
-              particles.push(...spawnParticles(e.x, e.y, '#ec4899', 6));
-            } else {
-              gameOver = true;
-              break;
-            }
-          }
-        }
-
-        // Update particles
-        for (const p of particles) {
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
-          p.vx *= 0.96;
-          p.vy *= 0.96;
-          p.life -= 0.03 * dt;
-        }
-
-        // Remove stale flashes
-        flashes = flashes.filter(f => now - f.startTime < 400);
-
-        // Nuke flash fade
-        if (nukeFlash > 0 && now - nukeFlash > 500) {
-          nukeFlash = 0;
-        }
-
-        setGameState({
-          ...s,
-          status: gameOver ? 'GAME_OVER' : 'PLAYING',
-          player: { x: px, y: py },
-          enemies: enemies.filter(e => e.active),
-          powerups: powerups.filter(p => p.active),
-          missiles: missiles.filter(m => m.active),
-          particles: particles.filter(p => p.life > 0),
-          score: s.score + scoreAdd,
-          difficultyLevel: diffLevel,
-          frozenUntil,
-          vortex,
-          nukeFlash,
-          flashes,
-          speedBoostUntil,
-          buzzsawUntil,
-          lastSpawnTime,
-          lastPowerupTime,
-          lastScoreTickTime,
-        });
+      // 暫停時畫面停在最後一幀（不重畫，畫面震動也不會在暫停時一直抖）
+      if (!isPaused) {
+        updateWorld(world, dt, inputRef.current.move);
+        needsRender = true;
+      }
+      if (needsRender) {
+        renderWorld(ctx, world, cache, dpr);
+        needsRender = false;
       }
 
-      loopId = requestAnimationFrame(loop);
+      if (world.phase !== lastPhase) {
+        lastPhase = world.phase;
+        handlePhaseChange(world.phase);
+        reportScore(now, true);
+      } else {
+        reportScore(now, false);
+      }
     };
+    frameId = requestAnimationFrame(frame);
 
-    loopId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(loopId);
-  }, [paused, inputRef, getInitialState]);
-
-  return gameState;
-}
-
-// ==========================================
-// 5. Grid Background Component
-// ==========================================
-function GridBackground({ w, h }: { w: number; h: number }) {
-  const lines: React.ReactNode[] = [];
-  // Vertical lines
-  for (let x = 0; x < w; x += CFG.GRID_SIZE) {
-    lines.push(
-      <div key={`v${x}`} className="absolute top-0 bottom-0"
-        style={{ left: x, width: 1, background: 'rgba(255,255,255,0.04)' }} />
-    );
-  }
-  // Horizontal lines
-  for (let y = 0; y < h; y += CFG.GRID_SIZE) {
-    lines.push(
-      <div key={`h${y}`} className="absolute left-0 right-0"
-        style={{ top: y, height: 1, background: 'rgba(255,255,255,0.04)' }} />
-    );
-  }
-  return <>{lines}</>;
-}
-
-// ==========================================
-// 6. Main Component
-// ==========================================
-interface Props {
-  inputRef: MutableRefObject<NormalizedInput>;
-  paused: boolean;
-  callbacks: GameCallbacks;
-  [key: string]: any;
-}
-
-export default function Game5({ inputRef, paused, callbacks }: Props) {
-  const gameState = useGameLogic(inputRef, paused, callbacks);
-  const {
-    player, enemies, powerups, missiles, particles,
-    status, score, startTime, difficultyLevel,
-    frozenUntil, vortex, nukeFlash, flashes,
-    speedBoostUntil, buzzsawUntil,
-  } = gameState;
-
-  const [dims, setDims] = useState({ w: 800, h: 600 });
-  useEffect(() => {
-    const update = () => setDims({ w: window.innerWidth, h: window.innerHeight });
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
-  const now = Date.now();
-  const isFrozen = now < frozenUntil;
-  const vortexActive = vortex && now - vortex.startTime < vortex.duration;
-  const isSpeedBoosted = now < speedBoostUntil;
-  const isBuzzsawActive = now < buzzsawUntil;
-  const nukeFlashActive = nukeFlash > 0 && now - nukeFlash < 500;
-  const nukeFlashOpacity = nukeFlashActive ? Math.max(0, 1 - (now - nukeFlash) / 500) : 0;
-
-  // Player rotation based on movement direction
-  const input = inputRef.current;
-  const moveAngle = Math.atan2(input.move.y, input.move.x) * (180 / Math.PI) + 90;
-  const isMoving = Math.abs(input.move.x) > 0.1 || Math.abs(input.move.y) > 0.1;
+    return () => {
+      cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
+  }, [inputRef]);
 
   return (
-    <div
-      className="relative w-full h-screen overflow-hidden font-mono select-none"
-      style={{ background: 'radial-gradient(ellipse at center, #0a0e1a 0%, #050510 70%, #020208 100%)' }}
-    >
-      {/* Grid */}
-      <GridBackground w={dims.w} h={dims.h} />
+    // h-screen + max-h-full：在平台（父層高度是 auto）時是整個螢幕，在 /dev 試玩框裡就貼齊框的高度。
+    // 根元素不要加 z-index / transform：結算面板要用 z-50 疊在平台的 GAME OVER 遮罩上面。
+    <div ref={containerRef} className="relative h-screen max-h-full w-full select-none overflow-hidden bg-[#050510] font-mono">
+      <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" />
+      {ui.status === 'READY' && <ReadyScreen best={ui.best} />}
+      {ui.status === 'GAME_OVER' && ui.summary && <GameOverPanel summary={ui.summary} />}
+    </div>
+  );
+}
 
-      {/* Nuke flash overlay */}
-      {nukeFlashActive && (
-        <div className="absolute inset-0 z-30 pointer-events-none"
-          style={{ background: `rgba(255, 255, 200, ${nukeFlashOpacity * 0.6})` }} />
-      )}
+// ─── READY 畫面 ───────────────────────────────────────────────────────
+// 平台的 GameOverlay 會在正中央顯示「Start your game via phone」，所以標題放上方、道具說明放下方，不疊字。
 
-      {/* Freeze overlay */}
-      {isFrozen && (
-        <div className="absolute inset-0 z-10 pointer-events-none"
-          style={{ background: 'rgba(34, 197, 94, 0.05)', border: '2px solid rgba(34, 197, 94, 0.3)' }} />
-      )}
-
-      {/* Vortex effect */}
-      {vortexActive && vortex && (
-        <div className="absolute z-10 pointer-events-none rounded-full"
-          style={{
-            left: vortex.x - CFG.VORTEX_RADIUS,
-            top: vortex.y - CFG.VORTEX_RADIUS,
-            width: CFG.VORTEX_RADIUS * 2,
-            height: CFG.VORTEX_RADIUS * 2,
-            background: 'radial-gradient(circle, rgba(168,85,247,0.3) 0%, rgba(168,85,247,0.1) 40%, transparent 70%)',
-            animation: 'spin 1s linear infinite',
-            border: '1px solid rgba(168,85,247,0.3)',
-          }}
-        />
-      )}
-
-      {/* Powerup collection flashes */}
-      {flashes.map((f, i) => {
-        const age = now - f.startTime;
-        const opacity = Math.max(0, 1 - age / 400);
-        const size = 40 + age * 0.3;
-        return (
-          <div key={i} className="absolute z-20 pointer-events-none rounded-full"
-            style={{
-              left: f.x - size / 2,
-              top: f.y - size / 2,
-              width: size, height: size,
-              background: `radial-gradient(circle, ${f.color}80, transparent)`,
-              opacity,
-            }} />
-        );
-      })}
-
-      {/* Enemies */}
-      {enemies.map(e => (
-        <div key={e.id} className="absolute pointer-events-none"
-          style={{
-            left: e.x - CFG.ENEMY_SIZE / 2,
-            top: e.y - CFG.ENEMY_SIZE / 2,
-            width: CFG.ENEMY_SIZE,
-            height: CFG.ENEMY_SIZE,
-            borderRadius: '50%',
-            background: e.frozen
-              ? 'radial-gradient(circle, #86efac, #22c55e)'
-              : 'radial-gradient(circle, #fca5a5, #ef4444)',
-            boxShadow: e.frozen
-              ? '0 0 10px rgba(34,197,94,0.6)'
-              : '0 0 10px rgba(239,68,68,0.6), 0 0 20px rgba(239,68,68,0.3)',
-            transition: e.frozen ? 'background 0.3s' : 'none',
-          }}
-        />
-      ))}
-
-      {/* Powerups */}
-      {powerups.map(p => {
-        const age = now - p.spawnTime;
-        const pulse = 1 + Math.sin(age * 0.005) * 0.15;
-        const color = POWERUP_COLORS[p.type];
-        return (
-          <div key={p.id} className="absolute pointer-events-none flex items-center justify-center"
-            style={{
-              left: p.x - (CFG.POWERUP_SIZE * pulse) / 2,
-              top: p.y - (CFG.POWERUP_SIZE * pulse) / 2,
-              width: CFG.POWERUP_SIZE * pulse,
-              height: CFG.POWERUP_SIZE * pulse,
-              borderRadius: '50%',
-              background: `radial-gradient(circle, ${color}cc, ${color}66)`,
-              boxShadow: `0 0 14px ${color}88, 0 0 28px ${color}44`,
-              border: `2px solid ${color}aa`,
-            }}
-          >
-            <span className="text-white text-xs font-black" style={{ textShadow: `0 0 6px ${color}` }}>
-              {POWERUP_LABELS[p.type]}
-            </span>
-          </div>
-        );
-      })}
-
-      {/* Missiles */}
-      {missiles.map(m => (
-        <div key={m.id} className="absolute pointer-events-none"
-          style={{
-            left: m.x - CFG.MISSILE_SIZE / 2,
-            top: m.y - CFG.MISSILE_SIZE / 2,
-            width: CFG.MISSILE_SIZE,
-            height: CFG.MISSILE_SIZE,
-            borderRadius: '50%',
-            background: 'radial-gradient(circle, #fff, #60a5fa)',
-            boxShadow: '0 0 8px rgba(96,165,250,0.8)',
-          }}
-        />
-      ))}
-
-      {/* Particles */}
-      {particles.map(p => (
-        <div key={p.id} className="absolute pointer-events-none rounded-full"
-          style={{
-            left: p.x - p.size / 2,
-            top: p.y - p.size / 2,
-            width: p.size,
-            height: p.size,
-            background: p.color,
-            opacity: Math.max(0, p.life),
-            boxShadow: `0 0 4px ${p.color}`,
-          }}
-        />
-      ))}
-
-      {/* Player */}
-      {status !== 'READY' && (
-        <div className="absolute z-20 pointer-events-none"
-          style={{
-            left: player.x - (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE),
-            top: player.y - (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE),
-            width: (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE) * 2,
-            height: (isBuzzsawActive ? CFG.BUZZSAW_RADIUS : CFG.PLAYER_SIZE) * 2,
-          }}
+function ReadyScreen({ best }: { best: number }) {
+  return (
+    <>
+      <div className="pointer-events-none absolute inset-x-0 top-[9%] z-30 flex flex-col items-center gap-3 px-4 text-center">
+        <h1
+          className="text-5xl font-black tracking-wider text-cyan-400 md:text-7xl"
+          style={{ textShadow: '0 0 30px rgba(103,232,249,0.6)' }}
         >
-          {isBuzzsawActive ? (
-            <>
-              {/* Buzzsaw gear */}
-              <svg viewBox="0 0 70 70" className="w-full h-full"
-                style={{
-                  animation: 'spin 0.4s linear infinite',
-                  filter: 'drop-shadow(0 0 10px rgba(236,72,153,0.8)) drop-shadow(0 0 20px rgba(236,72,153,0.4))',
-                }}
-              >
-                {/* Gear teeth */}
-                {Array.from({ length: 10 }).map((_, i) => {
-                  const angle = (i * 36) * Math.PI / 180;
-                  const outerR = 34;
-                  const innerR = 24;
-                  const toothW = 8;
-                  const cx = 35, cy = 35;
-                  const cos = Math.cos(angle);
-                  const sin = Math.sin(angle);
-                  const cos2 = Math.cos(angle + 0.15);
-                  const sin2 = Math.sin(angle + 0.15);
-                  const cos3 = Math.cos(angle - 0.15);
-                  const sin3 = Math.sin(angle - 0.15);
-                  return (
-                    <polygon key={i}
-                      points={`${cx + cos3 * innerR},${cy + sin3 * innerR} ${cx + cos * outerR},${cy + sin * outerR} ${cx + cos2 * innerR},${cy + sin2 * innerR}`}
-                      fill="#ec4899"
-                    />
-                  );
-                })}
-                <circle cx="35" cy="35" r="20" fill="#ec4899" />
-                <circle cx="35" cy="35" r="10" fill="#1e1e2e" />
-                <circle cx="35" cy="35" r="5" fill="#ec4899" />
-              </svg>
-            </>
-          ) : (
-            <>
-              {/* Normal player */}
-              {/* Speed boost trail */}
-              {isSpeedBoosted && (
-                <div className="absolute inset-0 rounded-full"
-                  style={{
-                    background: 'radial-gradient(circle, rgba(249,115,22,0.25), transparent 70%)',
-                    animation: 'pulse-fast 0.3s ease-in-out infinite',
-                  }}
-                />
-              )}
-              {/* Glow ring */}
-              <div className="absolute inset-0 rounded-full"
-                style={{
-                  background: isSpeedBoosted
-                    ? 'radial-gradient(circle, rgba(249,115,22,0.2), transparent 70%)'
-                    : 'radial-gradient(circle, rgba(103,232,249,0.15), transparent 70%)',
-                }}
-              />
-              {/* Arrow SVG */}
-              <svg viewBox="0 0 36 36" className="w-full h-full"
-                style={{
-                  transform: `rotate(${isMoving ? moveAngle : 0}deg)`,
-                  transition: 'transform 0.1s ease-out',
-                  filter: isSpeedBoosted
-                    ? 'drop-shadow(0 0 6px rgba(249,115,22,0.8)) drop-shadow(0 0 12px rgba(249,115,22,0.4))'
-                    : 'drop-shadow(0 0 6px rgba(103,232,249,0.8)) drop-shadow(0 0 12px rgba(103,232,249,0.4))',
-                }}
-              >
-                <polygon
-                  points="18,4 28,30 18,24 8,30"
-                  fill={isSpeedBoosted ? '#f97316' : '#67e8f9'}
-                  stroke={isSpeedBoosted ? '#fdba74' : '#a5f3fc'}
-                  strokeWidth="1"
-                />
-              </svg>
-            </>
-          )}
-        </div>
-      )}
+          TILT TO LIVE
+        </h1>
+        <p className="text-sm tracking-[0.3em] text-white/60">TILT YOUR PHONE TO STEER · DODGE THE RED DOTS</p>
+        <p className="animate-pulse text-xs tracking-[0.3em] text-cyan-300/70">TRY IT NOW — YOUR ARROW ALREADY MOVES</p>
+        {best > 0 && <p className="text-xs tracking-[0.3em] text-yellow-300/80">BEST {padScore(best)}</p>}
+      </div>
 
-      {/* HUD: Score */}
-      {status === 'PLAYING' && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-30">
-          <div className="text-2xl font-black tracking-[0.3em] text-white/90"
-            style={{ textShadow: '0 0 20px rgba(103,232,249,0.5)' }}>
-            {score.toString().padStart(6, '0')}
-          </div>
-        </div>
-      )}
-
-      {/* HUD: Difficulty */}
-      {status === 'PLAYING' && difficultyLevel > 0 && (
-        <div className="absolute top-5 left-5 z-30 text-xs font-bold text-cyan-400 bg-cyan-900/30 px-3 py-1 rounded-full border border-cyan-500/30">
-          WAVE {difficultyLevel + 1}
-        </div>
-      )}
-
-      {/* HUD: Active effects */}
-      {status === 'PLAYING' && (isFrozen || vortexActive || isSpeedBoosted || isBuzzsawActive) && (
-        <div className="absolute top-5 right-5 z-30 flex flex-col gap-1">
-          {isFrozen && (
-            <div className="text-xs font-bold text-green-400 bg-green-900/30 px-3 py-1 rounded-full border border-green-500/30">
-              FREEZE {Math.ceil((frozenUntil - now) / 1000)}s
+      <div className="pointer-events-none absolute inset-x-0 bottom-[6%] z-30 flex flex-wrap justify-center gap-x-5 gap-y-3 px-6">
+        {POWERUP_ORDER.map(type => (
+          <div key={type} className="flex w-24 flex-col items-center gap-1.5 text-center">
+            <PowerupBadge type={type} size={36} />
+            <div className="text-[11px] font-bold tracking-wider" style={{ color: POWERUPS[type].color }}>
+              {POWERUPS[type].name}
             </div>
-          )}
-          {vortexActive && vortex && (
-            <div className="text-xs font-bold text-purple-400 bg-purple-900/30 px-3 py-1 rounded-full border border-purple-500/30">
-              VORTEX {Math.ceil((vortex.duration - (now - vortex.startTime)) / 1000)}s
-            </div>
-          )}
-          {isSpeedBoosted && (
-            <div className="text-xs font-bold text-orange-400 bg-orange-900/30 px-3 py-1 rounded-full border border-orange-500/30">
-              SPEED {Math.ceil((speedBoostUntil - now) / 1000)}s
-            </div>
-          )}
-          {isBuzzsawActive && (
-            <div className="text-xs font-bold text-pink-400 bg-pink-900/30 px-3 py-1 rounded-full border border-pink-500/30">
-              BUZZSAW {Math.ceil((buzzsawUntil - now) / 1000)}s
-            </div>
-          )}
+            <div className="text-[10px] leading-tight text-white/50">{POWERUPS[type].hint}</div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ─── 結算面板 ─────────────────────────────────────────────────────────
+// 平台的 GameOverlay 已經在正中央顯示 GAME OVER 和分數，這裡只補它沒有的資訊，放在它下面。
+
+function GameOverPanel({ summary }: { summary: RunSummary }) {
+  const stats = [
+    { label: 'TIME', value: formatTime(summary.time) },
+    { label: 'KILLS', value: String(summary.kills) },
+    { label: 'MAX COMBO', value: String(summary.maxCombo) },
+    { label: 'BEST', value: padScore(summary.best) },
+  ];
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-0 z-50 flex flex-col items-center gap-3 px-4"
+      style={{ top: 'calc(50% + 92px)' }}
+    >
+      {summary.newBest && (
+        <div className="animate-pulse rounded-full border border-yellow-300/60 bg-yellow-400/15 px-4 py-1 text-xs font-black tracking-[0.3em] text-yellow-300">
+          NEW BEST!
         </div>
       )}
-
-      {/* READY screen */}
-      {status === 'READY' && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-6">
-          <div className="text-5xl font-black text-cyan-400 tracking-wider"
-            style={{ textShadow: '0 0 30px rgba(103,232,249,0.6)' }}>
-            TILT TO LIVE
+      <div className="flex flex-wrap justify-center gap-3">
+        {stats.map(stat => (
+          <div key={stat.label} className="min-w-24 rounded-lg border border-white/10 bg-black/60 px-4 py-2 text-center">
+            <div className="text-[10px] tracking-[0.25em] text-white/45">{stat.label}</div>
+            <div className="text-lg font-black text-white">{stat.value}</div>
           </div>
-          <div className="text-white/40 text-sm tracking-widest animate-pulse">
-            TILT TO MOVE
-          </div>
-          <div className="flex gap-4 mt-4 flex-wrap justify-center">
-            {(['missile', 'freeze', 'vortex', 'speed', 'buzzsaw', 'nuke'] as PowerupType[]).map(type => (
-              <div key={type} className="flex flex-col items-center gap-1">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold"
-                  style={{
-                    background: POWERUP_COLORS[type],
-                    boxShadow: `0 0 10px ${POWERUP_COLORS[type]}66`,
-                  }}>
-                  {POWERUP_LABELS[type]}
-                </div>
-                <div className="text-white/30 text-[10px] uppercase">{type}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* GAME OVER screen */}
-      {status === 'GAME_OVER' && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-black/60">
-          <div className="text-4xl font-black text-red-500 tracking-wider"
-            style={{ textShadow: '0 0 30px rgba(239,68,68,0.5)' }}>
-            GAME OVER
-          </div>
-          <div className="text-2xl font-bold text-white/80 tracking-widest">
-            {score.toString().padStart(6, '0')}
-          </div>
-          <div className="text-white/30 text-xs tracking-widest mt-2 animate-pulse">
-            TAP RESTART ON CONTROLLER
-          </div>
-        </div>
-      )}
-
-      {/* Animations */}
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        @keyframes pulse-fast {
-          0%, 100% { transform: scale(1); opacity: 0.6; }
-          50% { transform: scale(1.3); opacity: 0.2; }
-        }
-      `}</style>
+        ))}
+      </div>
+      <div className="text-[11px] tracking-[0.3em] text-white/45">PRESS RESTART ON YOUR PHONE</div>
     </div>
   );
 }
