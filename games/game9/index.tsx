@@ -1,1537 +1,423 @@
-// games/game9/index.tsx — Sky Fighter (R3F 3D Dogfight)
+// games/game9/index.tsx — Sky Fighter（R3F 3D 空戰）
+// 結構：
+//   sim.ts    遊戲邏輯（可變狀態物件，每幀原地更新）
+//   scene.tsx 3D 畫面（各元件在 useFrame 讀狀態）
+//   hud.tsx   HUD（DOM 畫一次，之後每幀直接改 style）
+//   sound.ts  音效
+// 這個檔案：接平台合約、每幀驅動（輸入 → 模擬 → 事件 → 鏡頭 → HUD）、標題與結算畫面。
 'use client';
 
-import React, { useEffect, useState, useRef, useCallback, useMemo, MutableRefObject } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { Line } from '@react-three/drei';
 import * as THREE from 'three';
-import { NormalizedInput, GameCallbacks, GameStatus } from '@/platform/types';
-import { sfx } from '@/platform/audio';
+import type { DesktopGameProps, GameStatus, NormalizedInput } from '@/platform/types';
+import { COLORS, FLIGHT, VIEW } from './config';
+import { GameState, clamp, clearEvents, createGameState, resetGame, startGame, stepGame } from './sim';
+import { SkyScene } from './scene';
+import { HudController, Hud, ViewSize, speedRatio } from './hud';
+import { WindLoop, skySfx } from './sound';
 
 // ==========================================
-// 1. Configuration
+// 鏡頭
 // ==========================================
-const CFG = {
-  // Flight
-  YAW_SENSITIVITY: 0.04,
-  PITCH_SENSITIVITY: 0.03,
-  // Speed
-  BASE_SPEED: 1.5,
-  MIN_SPEED: 0.8,
-  MAX_SPEED: 3.0,
-  BOOST_MULT: 1.4,
-  DIVE_ACCEL: 0.004,
-  CLIMB_DECEL: 0.0025,
-  DRAG_RATE: 0.005,
-  // Combat
-  MAX_AMMO: 60,
-  FIRE_RATE: 80,
-  RELOAD_TIME: 2000,
-  BULLET_SPEED: 12,
-  BULLET_LIFETIME: 90,
-  BULLET_DAMAGE: 8,
-  ENEMY_BULLET_SPEED: 10,
-  ENEMY_BULLET_DAMAGE: 5,
-  ENEMY_BULLET_SPREAD: 0.15,
-  // Player
-  PLAYER_HP: 100,
-  PLAYER_HITBOX: 2.5,
-  // Enemy
-  ENEMY_HP: 40,
-  ENEMY_HITBOX: 3.0,
-  ENEMY_PATROL_RADIUS: 80,
-  ENEMY_DETECT_RANGE: 300,
-  ENEMY_FIRE_RANGE: 200,
-  ENEMY_FIRE_ANGLE: 15 * (Math.PI / 180),
-  ENEMY_TURN_RATE: 0.03,
-  ENEMY_EVADE_TIME: 120,
-  ENEMY_BURST_MIN: 3,
-  ENEMY_BURST_MAX: 5,
-  ENEMY_BURST_CD_MIN: 120,
-  ENEMY_BURST_CD_MAX: 180,
-  // Arena
-  ARENA_RADIUS: 600,
-  ARENA_PUSH: 0.02,
-  GROUND_Y: 0,
-  GROUND_PUSH_Y: 15,
-  GROUND_PUSH_RATE: 0.04,
-  // Ammo regen
-  AMMO_REGEN_RATE: 4,  // ammo per second (passive regen)
-  // Brake
-  BRAKE_DECEL: 0.03,
-  // Radar
-  RADAR_RANGE: 400,
-};
+const UP = new THREE.Vector3(0, 1, 0);
+const _desiredOffset = new THREE.Vector3();
+const _desiredLook = new THREE.Vector3();
+const _look = new THREE.Vector3();
+const _shake = new THREE.Vector3();
+const ZERO = new THREE.Vector3();
 
-// ==========================================
-// 2. Types
-// ==========================================
-interface Vec3 { x: number; y: number; z: number; }
-interface Quat { w: number; x: number; y: number; z: number; }
+class CameraRig {
+  /** 鏡頭相對飛機的位置（平滑的是「相對位置」，高速時才不會被甩到後面） */
+  offset = new THREE.Vector3(0, 4, 16);
+  lookOffset = new THREE.Vector3();
+  roll = 0;
+  fov = VIEW.FOV_BASE;
+  /** 震動量 0~1，震幅 = trauma²，會自己衰減 */
+  trauma = 0;
+  snap = true;
+  time = 0;
+  /** 墜落鏡頭的目標相對位置（玩家死掉那一刻才決定） */
+  deathOffset: THREE.Vector3 | null = null;
 
-type AIState = 'PATROL' | 'CHASE' | 'EVADE';
+  addTrauma(amount: number): void {
+    this.trauma = Math.min(1, this.trauma + amount);
+  }
 
-interface Enemy {
-  id: number;
-  pos: Vec3;
-  orientation: Quat;
-  speed: number;
-  hp: number;
-  maxHp: number;
-  state: AIState;
-  stateTimer: number;
-  patrolAngle: number;
-  fireTimer: number;
-  burstCount: number;
-  burstRemaining: number;
-  cooldownTimer: number;
-  flashTimer: number;
+  /** 下一幀直接跳到目標位置（開局、重來時用，不要從標題畫面的位置滑過去） */
+  requestSnap(): void {
+    this.snap = true;
+    this.deathOffset = null;
+  }
 }
 
-interface Bullet {
-  id: number;
-  pos: Vec3;
-  vel: Vec3;
-  life: number;
-  isEnemy: boolean;
-  damage: number;
+function smoothFactor(rate: number, dt: number): number {
+  return 1 - Math.exp(-rate * dt);
 }
 
-interface Particle {
-  id: number;
-  pos: Vec3;
-  vel: Vec3;
-  life: number;
-  maxLife: number;
-  color: string;
+/** 平滑的偽亂數震動（比純亂數不暈） */
+function shakeNoise(t: number, seed: number): number {
+  return Math.sin(t * 31.7 + seed * 12.3) * 0.6 + Math.sin(t * 17.3 + seed * 4.1) * 0.4;
 }
 
-interface GameState {
-  player: {
-    pos: Vec3;
-    orientation: Quat;
-    speed: number;
-    hp: number;
-    ammo: number;
-    maxAmmo: number;
-    score: number;
-    kills: number;
-  };
-  enemies: Enemy[];
-  bullets: Bullet[];
-  explosions: Particle[];
-  status: GameStatus;
-  startTime: number;
-  phase: number;
-  lastSpawnTime: number;
-  nextSpawnDelay: number;
-  lastFireTime: number;
+function fovForSpeed(ratio: number): number {
+  const cruise = speedRatio(FLIGHT.CRUISE_SPEED);
+  if (ratio < cruise) return VIEW.FOV_BASE - VIEW.FOV_BRAKE * ((cruise - ratio) / cruise);
+  return VIEW.FOV_BASE + VIEW.FOV_BOOST * Math.min(1.3, (ratio - cruise) / (1 - cruise));
 }
 
-// ==========================================
-// 3. Helpers
-// ==========================================
-let _id = 0;
-function nid() { return ++_id; }
+function updateCamera(rig: CameraRig, camera: THREE.PerspectiveCamera, game: GameState, dt: number): void {
+  const p = game.player;
+  rig.time += dt;
+  let base = p.pos;
+  let fovTarget = VIEW.FOV_BASE;
 
-function v3len(a: Vec3, b: Vec3): number {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  const dz = a.z - b.z;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
-
-function v3lenXZ(a: Vec3, b: Vec3): number {
-  const dx = a.x - b.x;
-  const dz = a.z - b.z;
-  return Math.sqrt(dx * dx + dz * dz);
-}
-
-function clamp(v: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, v));
-}
-
-function spawnEnemy(playerPos: Vec3, playerOrientation: Quat, phase: number): Enemy {
-  const _q = new THREE.Quaternion(playerOrientation.x, playerOrientation.y, playerOrientation.z, playerOrientation.w);
-  const _fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(_q);
-
-  let spawnPos: Vec3;
-  const dist = 300;
-
-  if (phase <= 1) {
-    // Spawn AHEAD of player
-    spawnPos = {
-      x: playerPos.x + _fwd.x * dist,
-      y: Math.max(40, playerPos.y + 20 + Math.random() * 40),
-      z: playerPos.z + _fwd.z * dist,
-    };
-  } else if (phase === 2) {
-    // Spawn to SIDE
-    const side = Math.random() > 0.5 ? 1 : -1;
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(_q);
-    spawnPos = {
-      x: playerPos.x + right.x * dist * side,
-      y: Math.max(40, playerPos.y + Math.random() * 60),
-      z: playerPos.z + right.z * dist * side,
-    };
-  } else if (phase === 3) {
-    // Spawn BEHIND
-    spawnPos = {
-      x: playerPos.x - _fwd.x * dist,
-      y: Math.max(40, playerPos.y + Math.random() * 60),
-      z: playerPos.z - _fwd.z * dist,
-    };
+  if (game.phase === 'READY') {
+    // 標題畫面：繞著飛機慢慢轉
+    const t = game.time * 0.25;
+    rig.offset.set(Math.sin(t) * 15, 3.5 + Math.sin(t * 0.7) * 1.5, Math.cos(t) * 15);
+    rig.lookOffset.set(0, 0, 0);
+    rig.roll = 0;
+    rig.snap = true;
+  } else if (game.phase === 'PLAYING') {
+    const ratio = clamp(speedRatio(p.speed), 0, 1.3);
+    const dist = VIEW.CAMERA_DIST * (0.9 + ratio * 0.35);
+    _desiredOffset.copy(p.forward).multiplyScalar(-dist).addScaledVector(UP, VIEW.CAMERA_HEIGHT);
+    _desiredLook.copy(p.forward).multiplyScalar(VIEW.CAMERA_LOOK_AHEAD);
+    if (rig.snap) {
+      rig.offset.copy(_desiredOffset);
+      rig.lookOffset.copy(_desiredLook);
+      rig.snap = false;
+    }
+    rig.offset.lerp(_desiredOffset, smoothFactor(6, dt));
+    rig.lookOffset.lerp(_desiredLook, smoothFactor(9, dt));
+    // 鏡頭只跟一點點機身傾斜：有轉彎感，但地平線不會大幅晃
+    rig.roll += (p.bank * 0.2 - rig.roll) * smoothFactor(5, dt);
+    fovTarget = fovForSpeed(ratio);
   } else {
-    // Random position
-    const angle = Math.random() * Math.PI * 2;
-    spawnPos = {
-      x: playerPos.x + Math.cos(angle) * dist,
-      y: Math.max(40, 30 + Math.random() * 120),
-      z: playerPos.z + Math.sin(angle) * dist,
-    };
+    // 墜落鏡頭：轉成水平視角看著墜落點（看得到爆炸、海面和天空），慢慢拉遠
+    base = game.deathPos;
+    if (!rig.deathOffset) {
+      const horizontal = new THREE.Vector3(rig.offset.x, 0, rig.offset.z);
+      if (horizontal.lengthSq() < 1) horizontal.set(0, 0, 1);
+      rig.deathOffset = horizontal.normalize().multiplyScalar(26).addScaledVector(UP, 7);
+    }
+    rig.deathOffset.multiplyScalar(1 + dt * 0.08);
+    rig.offset.lerp(rig.deathOffset, smoothFactor(1.8, dt));
+    rig.lookOffset.lerp(ZERO, smoothFactor(3, dt));
+    rig.roll += (0 - rig.roll) * smoothFactor(2, dt);
   }
 
-  // Phase-dependent HP: phase 1 = 1-hit kill, scaling up
-  const hp = phase <= 1 ? CFG.BULLET_DAMAGE
-           : phase === 2 ? CFG.BULLET_DAMAGE * 2
-           : phase === 3 ? CFG.BULLET_DAMAGE * 3
-           : phase === 4 ? CFG.ENEMY_HP
-           : 55;
+  rig.fov += (fovTarget - rig.fov) * smoothFactor(4, dt);
+  rig.trauma = Math.max(0, rig.trauma - dt * 1.4);
+  const shake = rig.trauma * rig.trauma;
 
-  // Phase-dependent speed: phase 1 = slow & easy, scaling up
-  const speed = phase <= 1 ? 0.8
-              : phase === 2 ? 1.0
-              : phase === 3 ? 1.3
-              : phase === 4 ? 1.3
-              : 1.8;
-
-  // Phase-dependent burst cooldown: phase 1 = very long pauses
-  const cooldown = phase <= 1 ? CFG.ENEMY_BURST_CD_MAX * 2
-                 : phase === 2 ? CFG.ENEMY_BURST_CD_MAX * 1.5
-                 : phase >= 5  ? CFG.ENEMY_BURST_CD_MIN
-                 : CFG.ENEMY_BURST_CD_MAX;
-
-  return {
-    id: nid(),
-    pos: spawnPos,
-    orientation: { w: 1, x: 0, y: 0, z: 0 },
-    speed,
-    hp,
-    maxHp: hp,
-    state: 'PATROL',
-    stateTimer: 0,
-    patrolAngle: Math.random() * Math.PI * 2,
-    fireTimer: 0,
-    burstCount: 0,
-    burstRemaining: 0,
-    cooldownTimer: cooldown,
-    flashTimer: 0,
-  };
-}
-
-function makeExplosion(pos: Vec3, count: number, color: string): Particle[] {
-  const particles: Particle[] = [];
-  for (let i = 0; i < count; i++) {
-    const maxLife = 30 + Math.random() * 30;
-    particles.push({
-      id: nid(),
-      pos: { x: pos.x, y: pos.y, z: pos.z },
-      vel: {
-        x: (Math.random() - 0.5) * 3,
-        y: (Math.random() - 0.5) * 3,
-        z: (Math.random() - 0.5) * 3,
-      },
-      life: maxLife,
-      maxLife,
-      color,
-    });
+  camera.position.copy(base).add(rig.offset);
+  if (shake > 0) {
+    _shake.set(shakeNoise(rig.time, 1), shakeNoise(rig.time, 2), shakeNoise(rig.time, 3));
+    camera.position.addScaledVector(_shake, shake * 1.6);
   }
-  return particles;
-}
-
-function getPhase(elapsed: number): number {
-  if (elapsed < 30) return 1;
-  if (elapsed < 60) return 2;
-  if (elapsed < 90) return 3;
-  if (elapsed < 120) return 4;
-  return 5;
-}
-
-function maxEnemiesForPhase(phase: number): number {
-  if (phase <= 3) return 1;
-  if (phase === 4) return 2;
-  return 3;
+  camera.position.y = Math.max(camera.position.y, 1.5);
+  _look.copy(base).add(rig.lookOffset);
+  camera.up.copy(UP);
+  camera.lookAt(_look);
+  camera.rotateZ(rig.roll + shake * 0.06 * shakeNoise(rig.time, 4));
+  if (Math.abs(camera.fov - rig.fov) > 0.05) {
+    camera.fov = rig.fov;
+    camera.updateProjectionMatrix();
+  }
+  camera.updateMatrixWorld();
 }
 
 // ==========================================
-// 4. Game Logic Hook
+// 每幀驅動
 // ==========================================
-function useGameLogic(
-  inputRef: MutableRefObject<NormalizedInput>,
-  paused: boolean,
-  callbacks: GameCallbacks,
-) {
-  const getInitialState = useCallback((): GameState => {
-    _id = 0;
-    return {
-      player: {
-        pos: { x: 0, y: 60, z: 0 },
-        orientation: { w: 1, x: 0, y: 0, z: 0 },
-        speed: CFG.BASE_SPEED,
-        hp: CFG.PLAYER_HP,
-        ammo: CFG.MAX_AMMO,
-        maxAmmo: CFG.MAX_AMMO,
-        score: 0,
-        kills: 0,
-      },
-      enemies: [],
-      bullets: [],
-      explosions: [],
-      status: 'READY' as GameStatus,
-      startTime: 0,
-      phase: 1,
-      lastSpawnTime: 0,
-      nextSpawnDelay: 3000,
-      lastFireTime: 0,
-    };
-  }, []);
+export interface Debrief {
+  score: number;
+  kills: number;
+  wave: number;
+  accuracy: number;
+  bestStreak: number;
+}
 
-  const [gs, setGs] = useState<GameState>(getInitialState);
-  const stateRef = useRef(gs);
-  stateRef.current = gs;
-  const cbRef = useRef(callbacks);
-  cbRef.current = callbacks;
+/** 單次型按鈕（start-game 等）會維持 true 約 150ms，只取「剛按下」那一幀 */
+class ActionEdges {
+  private previous: Record<string, boolean> = {};
 
-  // Expose state via refs for R3F components
-  const playerRef = useRef(gs.player);
-  playerRef.current = gs.player;
-  const enemiesRef = useRef(gs.enemies);
-  enemiesRef.current = gs.enemies;
-  const bulletsRef = useRef(gs.bullets);
-  bulletsRef.current = gs.bullets;
-  const explosionsRef = useRef(gs.explosions);
-  explosionsRef.current = gs.explosions;
+  pressed(actions: NormalizedInput['actions'], name: string): boolean {
+    const now = !!actions[name];
+    const before = !!this.previous[name];
+    this.previous[name] = now;
+    return now && !before;
+  }
+}
 
-  useEffect(() => { cbRef.current.onScoreChange(gs.player.score); }, [gs.player.score]);
-  useEffect(() => { cbRef.current.onStatusChange(gs.status); }, [gs.status]);
+interface DriverProps {
+  game: GameState;
+  inputRef: DesktopGameProps['inputRef'];
+  pausedRef: React.RefObject<boolean>;
+  hudRootRef: React.RefObject<HTMLDivElement | null>;
+  onStatus: (status: GameStatus) => void;
+  onScore: (score: number) => void;
+  onGameOver: (debrief: Debrief) => void;
+}
 
-  useEffect(() => {
-    let loopId: number;
-    let prevT = performance.now();
+function GameDriver({ game, inputRef, pausedRef, hudRootRef, onStatus, onScore, onGameOver }: DriverProps) {
+  const [rig] = useState(() => new CameraRig());
+  const [hud] = useState(() => new HudController());
+  const [wind] = useState(() => new WindLoop());
+  const [edges] = useState(() => new ActionEdges());
+  const lastScoreRef = useRef(0);
+  const wasBoostingRef = useRef(false);
 
-    // Pre-allocate reusable THREE objects
-    const _q = new THREE.Quaternion();
-    const _qDelta = new THREE.Quaternion();
-    const _forward = new THREE.Vector3();
-    const _v3 = new THREE.Vector3();
-    const _eQ = new THREE.Quaternion();
-    const _eQDelta = new THREE.Quaternion();
-    const _eFwd = new THREE.Vector3();
-    const _eV3 = new THREE.Vector3();
-    const _toTarget = new THREE.Vector3();
-    const smoothed = { x: 0, y: 0 };
-    const spottedEnemies = new Set<number>(); // track which enemies have been called out
-    let lastProxWarn = 0;
+  useEffect(() => () => wind.stop(), [wind]);
 
-    const loop = (now: number) => {
-      const dt = Math.min((now - prevT) / 16.667, 3);
-      prevT = now;
-      const input = inputRef.current;
-      const s = stateRef.current;
+  // priority -1：比畫面元件（0）先跑，大家讀到的都是同一幀的狀態
+  useFrame((state, delta) => {
+    const dt = Math.min(delta, 0.05);
+    const input = inputRef.current;
+    const actions = input.actions;
+    const paused = pausedRef.current;
+    const camera = state.camera as THREE.PerspectiveCamera;
+    const size: ViewSize = state.size;
 
-      // Lifecycle
-      if (s.status === 'READY' && input.actions['start-game']) {
-        setGs(prev => ({ ...prev, status: 'PLAYING', startTime: Date.now() }));
-        sfx.start();
-      }
-      if (input.actions['restart-game']) {
-        smoothed.x = 0;
-        smoothed.y = 0;
-        setGs(getInitialState());
-      }
+    // ─── 生命週期 ───
+    if (edges.pressed(actions, 'restart-game')) {
+      resetGame(game);
+      rig.requestSnap();
+      lastScoreRef.current = 0;
+      onScore(0);
+      onStatus('READY');
+    }
+    if (edges.pressed(actions, 'start-game') && game.phase === 'READY') {
+      startGame(game);
+      rig.requestSnap();
+      onStatus('PLAYING');
+    }
+    const inRun = game.phase === 'PLAYING' || game.phase === 'DYING';
+    if (edges.pressed(actions, 'pause') && inRun) onStatus('PAUSED');
+    if (edges.pressed(actions, 'resume') && inRun) onStatus('PLAYING');
 
-      if (s.status === 'PLAYING' && !paused) {
-        const nowMs = Date.now();
-        const elapsed = (nowMs - s.startTime) / 1000;
-        const phase = getPhase(elapsed);
-        const isThrottling = !!input.actions['throttle'];
-        const isBraking = !!input.actions['brake'];
-        const isFiring = !!input.actions['fire'];
+    // ─── 模擬 ───
+    const running = !paused;
+    if (running) {
+      stepGame(game, {
+        moveX: input.move.x,
+        moveY: input.move.y,
+        fire: !!actions.fire,
+        throttle: !!actions.throttle,
+        brake: !!actions.brake,
+      }, dt);
+    }
 
-        // ─── Player Flight Physics ───
-        // 1. Smooth gyro input (normalize to -1..+1; platform bakes speed multiplier into input)
-        const nx = input.move.x / 15;
-        const ny = input.move.y / 15;
-        smoothed.x += (nx - smoothed.x) * 0.12;
-        smoothed.y += (ny - smoothed.y) * 0.12;
-
-        // 2. Direct yaw + pitch (no roll — plane never barrel-rolls)
-        const dYaw = -smoothed.x * CFG.YAW_SENSITIVITY * dt;
-        const dPitch = smoothed.y * CFG.PITCH_SENSITIVITY * dt;
-
-        // 3. Apply pitch + yaw to quaternion
-        _q.set(s.player.orientation.x, s.player.orientation.y, s.player.orientation.z, s.player.orientation.w);
-        _qDelta.setFromAxisAngle(_v3.set(1, 0, 0), dPitch);
-        _q.multiply(_qDelta);
-        _qDelta.setFromAxisAngle(_v3.set(0, 1, 0), dYaw);
-        _q.multiply(_qDelta);
-        _q.normalize();
-
-        // 4. Extract forward: (0,0,-1) rotated by quaternion
-        _forward.set(0, 0, -1).applyQuaternion(_q);
-
-        // 5. Speed model (throttle / brake) — gradual ramp with smooth drag
-        let speed = s.player.speed;
-        if (isThrottling) {
-          // Gradual additive acceleration toward max — feels like building thrust
-          const targetSpeed = CFG.BASE_SPEED * CFG.BOOST_MULT;
-          speed += (targetSpeed - speed) * 0.02 * dt;
+    // ─── 事件：音效、鏡頭震動 ───
+    const p = game.player;
+    for (const event of game.events) {
+      switch (event.type) {
+        case 'shot':
+          skySfx.gun();
+          break;
+        case 'gunEmpty':
+          skySfx.gunEmpty();
+          break;
+        case 'enemyHit':
+          skySfx.hitTick();
+          break;
+        case 'enemyKilled': {
+          skySfx.enemyDown();
+          if (event.multiplier > 1) skySfx.streak(event.multiplier);
+          const closeness = clamp(1 - event.pos.distanceTo(p.pos) / 400, 0.15, 1);
+          rig.addTrauma(0.35 * closeness);
+          break;
         }
-        if (isBraking) {
-          speed += (CFG.MIN_SPEED - speed) * 0.04 * dt;
-        }
-        // Gravity-assisted dive/climb: stronger effect for steeper angles
-        const pitchFactor = clamp(_forward.y, -1, 1);
-        if (pitchFactor < -0.1) {
-          speed += CFG.DIVE_ACCEL * (-pitchFactor) * dt;
-        }
-        if (pitchFactor > 0.1) {
-          speed -= CFG.CLIMB_DECEL * pitchFactor * dt;
-        }
-        // Natural drag: smoothly returns toward base speed (stronger when far from base)
-        speed += (CFG.BASE_SPEED - speed) * CFG.DRAG_RATE * dt;
-        speed = clamp(speed, CFG.MIN_SPEED, isThrottling ? CFG.MAX_SPEED : CFG.MAX_SPEED * 0.85);
-
-        // 6. Move along forward
-        const px = s.player.pos.x + _forward.x * speed * dt;
-        let py = s.player.pos.y + _forward.y * speed * dt;
-        const pz = s.player.pos.z + _forward.z * speed * dt;
-
-        // 7. Ground proximity auto-pitch-up
-        if (py < CFG.GROUND_PUSH_Y) {
-          const pushFactor = 1 - (py / CFG.GROUND_PUSH_Y);
-          // Rotate pitch up
-          _qDelta.setFromAxisAngle(_v3.set(1, 0, 0), -pushFactor * CFG.GROUND_PUSH_RATE * dt);
-          _q.multiply(_qDelta);
-          _q.normalize();
-          py = Math.max(2, py);
-        }
-
-        // 7b. Ground crash: if altitude < 5 and diving downward, kill the player
-        let groundCrash = false;
-        if (py < 5 && _forward.y < -0.2) {
-          groundCrash = true;
-        }
-
-        // 8. Arena boundary soft-push
-        const distFromCenter = Math.sqrt(px * px + pz * pz);
-        let adjustedPx = px;
-        let adjustedPz = pz;
-        if (distFromCenter > CFG.ARENA_RADIUS) {
-          const pushBack = (distFromCenter - CFG.ARENA_RADIUS) * CFG.ARENA_PUSH * dt;
-          const nx = px / distFromCenter;
-          const nz = pz / distFromCenter;
-          adjustedPx -= nx * pushBack;
-          adjustedPz -= nz * pushBack;
-        }
-
-        // Clamp altitude
-        const adjustedPy = clamp(py, 2, 350);
-
-        const newOrientation: Quat = { w: _q.w, x: _q.x, y: _q.y, z: _q.z };
-        const newPos: Vec3 = { x: adjustedPx, y: adjustedPy, z: adjustedPz };
-
-        // ─── Combat: Player Firing + Ammo Auto-Regen ───
-        let ammo = s.player.ammo;
-        const newBullets = [...s.bullets];
-        let lastFireTime = s.lastFireTime;
-
-        // Passive ammo regen (always active)
-        ammo = Math.min(CFG.MAX_AMMO, ammo + CFG.AMMO_REGEN_RATE / 60 * dt);
-
-        // Fire
-        if (isFiring && ammo >= 1 && (nowMs - lastFireTime) >= CFG.FIRE_RATE) {
-          ammo--;
-          lastFireTime = nowMs;
-          sfx.shoot();
-          newBullets.push({
-            id: nid(),
-            pos: { x: newPos.x, y: newPos.y, z: newPos.z },
-            vel: { x: _forward.x * CFG.BULLET_SPEED, y: _forward.y * CFG.BULLET_SPEED, z: _forward.z * CFG.BULLET_SPEED },
-            life: CFG.BULLET_LIFETIME,
-            isEnemy: false,
-            damage: CFG.BULLET_DAMAGE,
+        case 'playerHit':
+          skySfx.playerHit();
+          rig.addTrauma(event.damage >= 20 ? 0.8 : 0.32);
+          break;
+        case 'playerDied':
+          skySfx.playerExplode();
+          rig.addTrauma(1);
+          break;
+        case 'lockOn':
+          skySfx.lockOn();
+          break;
+        case 'waveStart':
+          skySfx.waveStart();
+          break;
+        case 'waveClear':
+          skySfx.waveClear();
+          break;
+        case 'gameOver':
+          onStatus('GAME_OVER');
+          onGameOver({
+            score: game.score,
+            kills: game.kills,
+            wave: game.wave,
+            accuracy: game.shotsFired > 0 ? game.shotsHit / game.shotsFired : 0,
+            bestStreak: game.bestStreak,
           });
-        }
-
-        // ─── Update Bullets ───
-        for (let i = newBullets.length - 1; i >= 0; i--) {
-          const b = newBullets[i];
-          b.pos.x += b.vel.x * dt;
-          b.pos.y += b.vel.y * dt;
-          b.pos.z += b.vel.z * dt;
-          b.life -= dt;
-          if (b.life <= 0 || b.pos.y < 0) {
-            newBullets.splice(i, 1);
-          }
-        }
-
-        // ─── Update Enemies ───
-        const newEnemies = [...s.enemies];
-        let score = s.player.score;
-        let kills = s.player.kills;
-        let hp = s.player.hp;
-        if (groundCrash) hp = 0;
-        let newExplosions = [...s.explosions];
-
-        for (let ei = newEnemies.length - 1; ei >= 0; ei--) {
-          const e = newEnemies[ei];
-
-          if (e.flashTimer > 0) e.flashTimer -= dt;
-
-          // AI State Machine
-          const distToPlayer = v3len(e.pos, newPos);
-
-          switch (e.state) {
-            case 'PATROL': {
-              e.patrolAngle += 0.008 * dt;
-              const patrolTarget: Vec3 = {
-                x: Math.cos(e.patrolAngle) * CFG.ENEMY_PATROL_RADIUS,
-                y: 60 + Math.sin(e.patrolAngle * 0.5) * 30,
-                z: Math.sin(e.patrolAngle) * CFG.ENEMY_PATROL_RADIUS,
-              };
-              steerEnemy(e, patrolTarget, CFG.ENEMY_TURN_RATE * 0.5, dt, _eQ, _eQDelta, _eFwd, _eV3, _toTarget);
-              if (distToPlayer < CFG.ENEMY_DETECT_RANGE) {
-                e.state = 'CHASE';
-                e.stateTimer = 0;
-              }
-              break;
-            }
-            case 'CHASE': {
-              // Phase-dependent turn rate: phase 1 = sluggish, scaling up
-              const turnRate = phase <= 1 ? CFG.ENEMY_TURN_RATE * 0.35
-                             : phase === 2 ? CFG.ENEMY_TURN_RATE * 0.6
-                             : phase === 3 ? CFG.ENEMY_TURN_RATE * 0.85
-                             : phase >= 5  ? CFG.ENEMY_TURN_RATE * 1.3
-                             : CFG.ENEMY_TURN_RATE;
-              steerEnemy(e, newPos, turnRate, dt, _eQ, _eQDelta, _eFwd, _eV3, _toTarget);
-
-              // Check fire angle
-              _eQ.set(e.orientation.x, e.orientation.y, e.orientation.z, e.orientation.w);
-              _eFwd.set(0, 0, -1).applyQuaternion(_eQ);
-              _toTarget.set(newPos.x - e.pos.x, newPos.y - e.pos.y, newPos.z - e.pos.z).normalize();
-              const angleToPlayer = Math.acos(clamp(_eFwd.dot(_toTarget), -1, 1));
-
-              // Firing
-              if (angleToPlayer < CFG.ENEMY_FIRE_ANGLE && distToPlayer < CFG.ENEMY_FIRE_RANGE) {
-                if (e.cooldownTimer <= 0 && e.burstRemaining <= 0) {
-                  e.burstRemaining = CFG.ENEMY_BURST_MIN + Math.floor(Math.random() * (CFG.ENEMY_BURST_MAX - CFG.ENEMY_BURST_MIN + 1));
-                  e.fireTimer = 0;
-                }
-              }
-
-              if (e.burstRemaining > 0) {
-                e.fireTimer -= dt;
-                if (e.fireTimer <= 0) {
-                  e.fireTimer = 6;
-                  e.burstRemaining--;
-                  // Fire bullet with spread (phase 1 = very inaccurate)
-                  const spread = CFG.ENEMY_BULLET_SPREAD * (
-                    phase <= 1 ? 2.0
-                    : phase === 2 ? 1.5
-                    : phase >= 5 ? 0.6
-                    : 1
-                  );
-                  const bDir = _eFwd.clone();
-                  bDir.x += (Math.random() - 0.5) * spread;
-                  bDir.y += (Math.random() - 0.5) * spread;
-                  bDir.z += (Math.random() - 0.5) * spread;
-                  bDir.normalize();
-                  newBullets.push({
-                    id: nid(),
-                    pos: { x: e.pos.x, y: e.pos.y, z: e.pos.z },
-                    vel: { x: bDir.x * CFG.ENEMY_BULLET_SPEED, y: bDir.y * CFG.ENEMY_BULLET_SPEED, z: bDir.z * CFG.ENEMY_BULLET_SPEED },
-                    life: CFG.BULLET_LIFETIME,
-                    isEnemy: true,
-                    damage: CFG.ENEMY_BULLET_DAMAGE,
-                  });
-                  if (e.burstRemaining <= 0) {
-                    e.cooldownTimer = CFG.ENEMY_BURST_CD_MIN + Math.random() * (CFG.ENEMY_BURST_CD_MAX - CFG.ENEMY_BURST_CD_MIN);
-                  }
-                }
-              }
-              if (e.cooldownTimer > 0) e.cooldownTimer -= dt;
-
-              // Check if should evade (low HP)
-              if (e.hp < e.maxHp * 0.3 && Math.random() < 0.01 * dt) {
-                e.state = 'EVADE';
-                e.stateTimer = CFG.ENEMY_EVADE_TIME;
-              }
-              break;
-            }
-            case 'EVADE': {
-              // Hard perpendicular turn + climb
-              const evadeTarget: Vec3 = {
-                x: e.pos.x + (Math.random() - 0.5) * 100,
-                y: e.pos.y + 50,
-                z: e.pos.z + (Math.random() - 0.5) * 100,
-              };
-              steerEnemy(e, evadeTarget, CFG.ENEMY_TURN_RATE * 1.5, dt, _eQ, _eQDelta, _eFwd, _eV3, _toTarget);
-              e.stateTimer -= dt;
-              if (e.stateTimer <= 0) {
-                e.state = 'CHASE';
-                e.stateTimer = 0;
-              }
-              break;
-            }
-          }
-
-          // Move enemy along its forward
-          _eQ.set(e.orientation.x, e.orientation.y, e.orientation.z, e.orientation.w);
-          _eFwd.set(0, 0, -1).applyQuaternion(_eQ);
-          e.pos.x += _eFwd.x * e.speed * dt;
-          e.pos.y += _eFwd.y * e.speed * dt;
-          e.pos.z += _eFwd.z * e.speed * dt;
-
-          // Keep enemy above ground and within arena
-          e.pos.y = Math.max(10, e.pos.y);
-          const eDist = Math.sqrt(e.pos.x * e.pos.x + e.pos.z * e.pos.z);
-          if (eDist > CFG.ARENA_RADIUS * 1.2) {
-            const factor = CFG.ARENA_RADIUS / eDist;
-            e.pos.x *= factor;
-            e.pos.z *= factor;
-          }
-
-          // Bullet-enemy collision (player bullets)
-          for (let bi = newBullets.length - 1; bi >= 0; bi--) {
-            const b = newBullets[bi];
-            if (b.isEnemy) continue;
-            const hitDist = v3len(b.pos, e.pos);
-            if (hitDist < CFG.ENEMY_HITBOX) {
-              e.hp -= b.damage;
-              e.flashTimer = 6;
-              newBullets.splice(bi, 1);
-              if (e.hp <= 0) {
-                sfx.explosion();
-                newExplosions = newExplosions.concat(makeExplosion(e.pos, 15, '#ff6600'));
-                score += 500;
-                kills++;
-                newEnemies.splice(ei, 1);
-                break;
-              }
-            }
-          }
-        }
-
-        // Player-enemy bullet collision
-        for (let bi = newBullets.length - 1; bi >= 0; bi--) {
-          const b = newBullets[bi];
-          if (!b.isEnemy) continue;
-          const hitDist = v3len(b.pos, newPos);
-          if (hitDist < CFG.PLAYER_HITBOX) {
-            hp -= b.damage;
-            sfx.crash();
-            newBullets.splice(bi, 1);
-            newExplosions = newExplosions.concat(makeExplosion(newPos, 5, '#ff0000'));
-          }
-        }
-
-        // ─── Enemy Detection Alerts ───
-        {
-          let closestDist = Infinity;
-          for (const e of newEnemies) {
-            const d = v3len(e.pos, newPos);
-            if (d < closestDist) closestDist = d;
-            // First-time spot callout
-            if (d < CFG.ENEMY_DETECT_RANGE && !spottedEnemies.has(e.id)) {
-              spottedEnemies.add(e.id);
-              sfx.enemySpotted();
-            }
-          }
-          // Proximity warning (closer = louder)
-          if (closestDist < CFG.ENEMY_DETECT_RANGE && nowMs - lastProxWarn > 800) {
-            const vol = 1 - closestDist / CFG.ENEMY_DETECT_RANGE;
-            sfx.proximityWarn(vol);
-            lastProxWarn = nowMs;
-          }
-          // Clean up spotted set for despawned enemies
-          const aliveIds = new Set(newEnemies.map(e => e.id));
-          for (const id of spottedEnemies) {
-            if (!aliveIds.has(id)) spottedEnemies.delete(id);
-          }
-        }
-
-        // ─── Explosion Particles ───
-        for (let pi = newExplosions.length - 1; pi >= 0; pi--) {
-          const p = newExplosions[pi];
-          p.pos.x += p.vel.x * dt;
-          p.pos.y += p.vel.y * dt;
-          p.pos.z += p.vel.z * dt;
-          p.life -= dt;
-          if (p.life <= 0) {
-            newExplosions.splice(pi, 1);
-          }
-        }
-
-        // ─── Enemy Spawning ───
-        let lastSpawnTime = s.lastSpawnTime;
-        let nextSpawnDelay = s.nextSpawnDelay;
-
-        const maxEnemies = maxEnemiesForPhase(phase);
-        if (newEnemies.length < maxEnemies && (nowMs - lastSpawnTime) > nextSpawnDelay) {
-          newEnemies.push(spawnEnemy(newPos, newOrientation, phase));
-          lastSpawnTime = nowMs;
-          nextSpawnDelay = 3000 + Math.random() * 2000;
-        }
-
-        // Score over time
-        score += Math.floor(dt * 0.5);
-
-        // ─── Check Death ───
-        let newStatus: GameStatus = 'PLAYING';
-        if (hp <= 0) {
-          newStatus = 'GAME_OVER';
-          sfx.gameOver();
-          newExplosions = newExplosions.concat(makeExplosion(newPos, 20, '#00ccff'));
-        }
-
-        setGs({
-          player: {
-            pos: newPos,
-            orientation: newOrientation,
-            speed,
-            hp: Math.max(0, hp),
-            ammo,
-            maxAmmo: CFG.MAX_AMMO,
-            score,
-            kills,
-          },
-          enemies: newEnemies,
-          bullets: newBullets,
-          explosions: newExplosions,
-          status: newStatus,
-          startTime: s.startTime,
-          phase,
-          lastSpawnTime,
-          nextSpawnDelay,
-          lastFireTime,
-        });
-      }
-
-      loopId = requestAnimationFrame(loop);
-    };
-
-    loopId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(loopId);
-  }, [paused, inputRef, getInitialState]);
-
-  return { gs, playerRef, enemiesRef, bulletsRef, explosionsRef };
-}
-
-// ─── AI Steering Helper ───
-function steerEnemy(
-  e: Enemy,
-  targetPos: Vec3,
-  turnRate: number,
-  dt: number,
-  _eQ: THREE.Quaternion,
-  _eQDelta: THREE.Quaternion,
-  _eFwd: THREE.Vector3,
-  _eV3: THREE.Vector3,
-  _toTarget: THREE.Vector3,
-) {
-  _eQ.set(e.orientation.x, e.orientation.y, e.orientation.z, e.orientation.w);
-  _eFwd.set(0, 0, -1).applyQuaternion(_eQ);
-
-  _toTarget.set(
-    targetPos.x - e.pos.x,
-    targetPos.y - e.pos.y,
-    targetPos.z - e.pos.z,
-  ).normalize();
-
-  // Compute cross product for rotation axis
-  _eV3.crossVectors(_eFwd, _toTarget);
-  const sinAngle = _eV3.length();
-
-  if (sinAngle > 0.001) {
-    _eV3.normalize();
-    const angle = Math.asin(clamp(sinAngle, -1, 1));
-    const step = Math.min(angle, turnRate * dt);
-    _eQDelta.setFromAxisAngle(_eV3, step);
-    _eQ.premultiply(_eQDelta);
-    _eQ.normalize();
-  }
-
-  e.orientation = { w: _eQ.w, x: _eQ.x, y: _eQ.y, z: _eQ.z };
-}
-
-// ==========================================
-// 5. R3F Components
-// ==========================================
-
-// ─── Player Jet ───
-function PlayerJet({ playerRef }: { playerRef: MutableRefObject<GameState['player']> }) {
-  const meshRef = useRef<THREE.Group>(null);
-  const glowRef = useRef<THREE.Mesh>(null);
-
-  useFrame(() => {
-    if (!meshRef.current || !playerRef.current) return;
-    const p = playerRef.current;
-    meshRef.current.position.set(p.pos.x, p.pos.y, p.pos.z);
-    meshRef.current.quaternion.set(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w);
-    if (glowRef.current) {
-      const mat = glowRef.current.material as THREE.MeshBasicMaterial;
-      mat.color.set(p.speed > CFG.BASE_SPEED * 1.3 ? '#ff6600' : '#00ffff');
-    }
-  });
-
-  return (
-    <group ref={meshRef}>
-      {/* Fuselage */}
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.5, 3.5, 6]} />
-        <meshStandardMaterial color="#00ccff" />
-      </mesh>
-      {/* Left wing */}
-      <mesh position={[-1.5, 0, 0.3]}>
-        <boxGeometry args={[2.2, 0.06, 0.9]} />
-        <meshStandardMaterial color="#0099cc" />
-      </mesh>
-      {/* Right wing */}
-      <mesh position={[1.5, 0, 0.3]}>
-        <boxGeometry args={[2.2, 0.06, 0.9]} />
-        <meshStandardMaterial color="#0099cc" />
-      </mesh>
-      {/* Vertical tail */}
-      <mesh position={[0, 0.4, 1.3]}>
-        <boxGeometry args={[0.06, 0.7, 0.5]} />
-        <meshStandardMaterial color="#0088aa" />
-      </mesh>
-      {/* Left h-tail */}
-      <mesh position={[-0.5, 0, 1.3]}>
-        <boxGeometry args={[0.8, 0.05, 0.35]} />
-        <meshStandardMaterial color="#0088aa" />
-      </mesh>
-      {/* Right h-tail */}
-      <mesh position={[0.5, 0, 1.3]}>
-        <boxGeometry args={[0.8, 0.05, 0.35]} />
-        <meshStandardMaterial color="#0088aa" />
-      </mesh>
-      {/* Engine glow */}
-      <mesh ref={glowRef} position={[0, 0, 1.8]}>
-        <sphereGeometry args={[0.2, 6, 6]} />
-        <meshBasicMaterial color="#00ffff" />
-      </mesh>
-    </group>
-  );
-}
-
-// ─── Enemy Jet ───
-function EnemyJet({ enemiesRef, playerRef, index }: {
-  enemiesRef: MutableRefObject<Enemy[]>;
-  playerRef: MutableRefObject<GameState['player']>;
-  index: number;
-}) {
-  const meshRef = useRef<THREE.Group>(null);
-  const bodyRef = useRef<THREE.Mesh>(null);
-  const hpBarRef = useRef<THREE.Mesh>(null);
-  const hpBgRef = useRef<THREE.Mesh>(null);
-  const hpGroupRef = useRef<THREE.Group>(null);
-  const flashRef = useRef(0);
-
-  useFrame(({ camera }) => {
-    if (!meshRef.current) return;
-    const enemies = enemiesRef.current;
-    if (index >= enemies.length) {
-      meshRef.current.visible = false;
-      return;
-    }
-    const e = enemies[index];
-    meshRef.current.visible = true;
-    meshRef.current.position.set(e.pos.x, e.pos.y, e.pos.z);
-    meshRef.current.quaternion.set(e.orientation.x, e.orientation.y, e.orientation.z, e.orientation.w);
-
-    // Flash white on hit
-    if (bodyRef.current) {
-      const mat = bodyRef.current.material as THREE.MeshStandardMaterial;
-      if (e.flashTimer > 0) {
-        mat.color.set('#ffffff');
-      } else {
-        mat.color.set('#ff3300');
+          break;
       }
     }
 
-    // HP bar: billboard toward camera, scale by HP ratio, color by health
-    if (hpBarRef.current && hpBgRef.current && hpGroupRef.current) {
-      const player = playerRef.current;
-      const dist = v3len(e.pos, player.pos);
-
-      // Only show HP bar within 250 units
-      const showBar = dist < 250;
-      hpGroupRef.current.visible = showBar;
-
-      if (showBar) {
-        // Billboard: make HP bar face the camera (in world space)
-        hpGroupRef.current.quaternion.copy(camera.quaternion);
-
-        const hpRatio = e.hp / e.maxHp;
-        // Scale the green bar width by HP ratio
-        hpBarRef.current.scale.set(hpRatio, 1, 1);
-        // Shift it left so it shrinks from right side
-        hpBarRef.current.position.x = -(1 - hpRatio) * 1;
-
-        // Color: green > yellow > red
-        const barMat = hpBarRef.current.material as THREE.MeshBasicMaterial;
-        if (hpRatio > 0.6) {
-          barMat.color.set('#00ff66');
-        } else if (hpRatio > 0.3) {
-          barMat.color.set('#ffcc00');
-        } else {
-          barMat.color.set('#ff3300');
-        }
-      }
+    // ─── 持續音效 ───
+    const flying = running && game.phase === 'PLAYING';
+    if (flying) {
+      wind.start();
+      wind.update(speedRatio(p.speed), p.throttle);
+      if (game.aimWarning) skySfx.aimWarning();
+      if (p.throttle && !wasBoostingRef.current) skySfx.afterburner();
+      wasBoostingRef.current = p.throttle;
+    } else {
+      wind.stop();
+      wasBoostingRef.current = false;
     }
-  });
 
-  return (
-    <group ref={meshRef}>
-      {/* HP bar — floats above the jet, billboards toward camera */}
-      <group ref={hpGroupRef} position={[0, 2.5, 0]}>
-        {/* Background (dark) */}
-        <mesh ref={hpBgRef}>
-          <planeGeometry args={[2, 0.22]} />
-          <meshBasicMaterial color="#333333" transparent opacity={0.6} depthTest={false} />
-        </mesh>
-        {/* Foreground (HP fill) */}
-        <mesh ref={hpBarRef} position={[0, 0, 0.01]}>
-          <planeGeometry args={[2, 0.18]} />
-          <meshBasicMaterial color="#00ff66" depthTest={false} />
-        </mesh>
-      </group>
-      {/* Fuselage */}
-      <mesh ref={bodyRef} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.5, 3.5, 6]} />
-        <meshStandardMaterial color="#ff3300" />
-      </mesh>
-      {/* Left wing */}
-      <mesh position={[-1.5, 0, 0.3]}>
-        <boxGeometry args={[2.2, 0.06, 0.9]} />
-        <meshStandardMaterial color="#cc2200" />
-      </mesh>
-      {/* Right wing */}
-      <mesh position={[1.5, 0, 0.3]}>
-        <boxGeometry args={[2.2, 0.06, 0.9]} />
-        <meshStandardMaterial color="#cc2200" />
-      </mesh>
-      {/* Vertical tail */}
-      <mesh position={[0, 0.4, 1.3]}>
-        <boxGeometry args={[0.06, 0.7, 0.5]} />
-        <meshStandardMaterial color="#cc2200" />
-      </mesh>
-      {/* Left h-tail */}
-      <mesh position={[-0.5, 0, 1.3]}>
-        <boxGeometry args={[0.8, 0.05, 0.35]} />
-        <meshStandardMaterial color="#cc2200" />
-      </mesh>
-      {/* Right h-tail */}
-      <mesh position={[0.5, 0, 1.3]}>
-        <boxGeometry args={[0.8, 0.05, 0.35]} />
-        <meshStandardMaterial color="#cc2200" />
-      </mesh>
-      {/* Engine glow */}
-      <mesh position={[0, 0, 1.8]}>
-        <sphereGeometry args={[0.2, 6, 6]} />
-        <meshBasicMaterial color="#ff4400" />
-      </mesh>
-    </group>
-  );
-}
-
-// ─── Bullets (instanced-like via useFrame) ───
-function BulletMeshes({ bulletsRef }: { bulletsRef: MutableRefObject<Bullet[]> }) {
-  const maxBullets = 80;
-  const refsPlayer = useRef<(THREE.Mesh | null)[]>([]);
-  const refsEnemy = useRef<(THREE.Mesh | null)[]>([]);
-
-  useFrame(() => {
-    const bullets = bulletsRef.current;
-    let pi = 0;
-    let ei = 0;
-    for (let i = 0; i < bullets.length; i++) {
-      const b = bullets[i];
-      if (!b.isEnemy && pi < maxBullets) {
-        const mesh = refsPlayer.current[pi];
-        if (mesh) {
-          mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
-          mesh.visible = true;
-        }
-        pi++;
-      } else if (b.isEnemy && ei < maxBullets) {
-        const mesh = refsEnemy.current[ei];
-        if (mesh) {
-          mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
-          mesh.visible = true;
-        }
-        ei++;
-      }
+    if (game.score !== lastScoreRef.current) {
+      lastScoreRef.current = game.score;
+      onScore(game.score);
     }
-    // Hide unused
-    for (let i = pi; i < maxBullets; i++) {
-      const mesh = refsPlayer.current[i];
-      if (mesh) mesh.visible = false;
+
+    // ─── 鏡頭與 HUD（要在鏡頭更新後才能投影到螢幕） ───
+    updateCamera(rig, camera, game, running ? dt : 0);
+    if (hud.attach(hudRootRef.current)) {
+      for (const event of game.events) hud.handleEvent(event, camera, size);
+      hud.update(game, camera, size);
     }
-    for (let i = ei; i < maxBullets; i++) {
-      const mesh = refsEnemy.current[i];
-      if (mesh) mesh.visible = false;
-    }
-  });
-
-  return (
-    <>
-      {Array.from({ length: maxBullets }, (_, i) => (
-        <mesh
-          key={`pb${i}`}
-          ref={(el) => { refsPlayer.current[i] = el; }}
-          visible={false}
-        >
-          <boxGeometry args={[0.15, 0.15, 0.6]} />
-          <meshBasicMaterial color="#ffff00" />
-        </mesh>
-      ))}
-      {Array.from({ length: maxBullets }, (_, i) => (
-        <mesh
-          key={`eb${i}`}
-          ref={(el) => { refsEnemy.current[i] = el; }}
-          visible={false}
-        >
-          <boxGeometry args={[0.15, 0.15, 0.6]} />
-          <meshBasicMaterial color="#ff3300" />
-        </mesh>
-      ))}
-    </>
-  );
-}
-
-
-// ─── Explosion Particles ───
-function ExplosionParticles({ explosionsRef }: { explosionsRef: MutableRefObject<Particle[]> }) {
-  const maxParticles = 60;
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
-
-  useFrame(() => {
-    const particles = explosionsRef.current;
-    for (let i = 0; i < maxParticles; i++) {
-      const mesh = refs.current[i];
-      if (!mesh) continue;
-      if (i < particles.length) {
-        const p = particles[i];
-        mesh.position.set(p.pos.x, p.pos.y, p.pos.z);
-        const s = (p.life / p.maxLife) * 0.8;
-        mesh.scale.set(s, s, s);
-        mesh.visible = true;
-        const mat = mesh.material as THREE.MeshBasicMaterial;
-        mat.opacity = p.life / p.maxLife;
-        mat.color.set(p.color);
-      } else {
-        mesh.visible = false;
-      }
-    }
-  });
-
-  return (
-    <>
-      {Array.from({ length: maxParticles }, (_, i) => (
-        <mesh
-          key={`ex${i}`}
-          ref={(el) => { refs.current[i] = el; }}
-          visible={false}
-        >
-          <octahedronGeometry args={[0.5, 0]} />
-          <meshBasicMaterial color="#ff6600" transparent opacity={1} />
-        </mesh>
-      ))}
-    </>
-  );
-}
-
-// ─── Chase Camera ───
-function ChaseCam({ playerRef }: { playerRef: MutableRefObject<GameState['player']> }) {
-  const camPos = useRef(new THREE.Vector3(0, 64, 30));
-  const camLook = useRef(new THREE.Vector3(0, 60, 0));
-
-  useFrame(({ camera }) => {
-    const p = playerRef.current;
-    if (!p) return;
-
-    const q = new THREE.Quaternion(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w);
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
-
-    const behind = forward.clone().multiplyScalar(-12);
-    const desired = new THREE.Vector3(
-      p.pos.x + behind.x,
-      p.pos.y + behind.y + 4,
-      p.pos.z + behind.z,
-    );
-    const lookAt = new THREE.Vector3(
-      p.pos.x + forward.x * 8,
-      p.pos.y + forward.y * 8,
-      p.pos.z + forward.z * 8,
-    );
-
-    camPos.current.lerp(desired, 0.08);
-    camLook.current.lerp(lookAt, 0.12);
-
-    // Don't go below ground
-    camPos.current.y = Math.max(camPos.current.y, 7);
-
-    camera.position.copy(camPos.current);
-    camera.lookAt(camLook.current);
-  });
+    clearEvents(game);
+  }, -1);
 
   return null;
 }
 
-// ─── Cloud Clusters ───
-function Clouds() {
-  const clusters = useMemo(() => {
-    const result: { x: number; y: number; z: number; spheres: { dx: number; dy: number; dz: number; s: number }[] }[] = [];
-    for (let i = 0; i < 18; i++) {
-      const angle = (i / 18) * Math.PI * 2 + Math.random() * 0.3;
-      const r = 150 + Math.random() * 350;
-      const cluster = {
-        x: Math.cos(angle) * r,
-        y: 100 + Math.random() * 160,
-        z: Math.sin(angle) * r,
-        spheres: [] as { dx: number; dy: number; dz: number; s: number }[],
-      };
-      // Larger, more overlapping spheres → reads as a cloud mass
-      const count = 5 + Math.floor(Math.random() * 4);
-      for (let j = 0; j < count; j++) {
-        cluster.spheres.push({
-          dx: (Math.random() - 0.5) * 20,
-          dy: (Math.random() - 0.5) * 4,
-          dz: (Math.random() - 0.5) * 12,
-          s: 8 + Math.random() * 14,
-        });
-      }
-      result.push(cluster);
-    }
-    return result;
+// ==========================================
+// 標題與結算
+// ==========================================
+function TitleCard() {
+  const controls: [string, string][] = [
+    ['TILT', 'steer & climb'],
+    ['FIRE', 'hold to shoot · lock-on aims for you'],
+    ['THROTTLE', 'afterburner'],
+    ['BRAKE', 'slow down · turn tighter'],
+  ];
+  return (
+    <div className="absolute inset-0 z-20 pointer-events-none select-none">
+      <div className="absolute left-0 right-0 text-center" style={{ top: '13%' }}>
+        <div
+          className="font-black tracking-wider"
+          style={{
+            fontSize: 'clamp(40px, 7vw, 84px)',
+            color: '#00eeff',
+            textShadow: '0 0 30px rgba(0,238,255,0.6), 0 0 60px rgba(0,238,255,0.3), 0 4px 0 rgba(0,40,70,0.6)',
+          }}
+        >
+          SKY FIGHTER
+        </div>
+        <div className="font-mono text-white/80 tracking-[0.3em] text-sm mt-1" style={{ textShadow: '0 1px 4px rgba(0,30,60,0.8)' }}>
+          SURVIVE THE WAVES · CHAIN YOUR KILLS
+        </div>
+      </div>
+      <div className="absolute left-0 right-0 flex justify-center" style={{ bottom: '9%' }}>
+        <div
+          className="grid gap-x-5 gap-y-1.5 font-mono text-sm px-6 py-4 rounded-xl"
+          style={{ gridTemplateColumns: 'auto auto', background: 'rgba(0,20,40,0.55)', border: '1px solid rgba(127,243,255,0.25)' }}
+        >
+          {controls.map(([key, text]) => (
+            <React.Fragment key={key}>
+              <span className="font-black text-right" style={{ color: COLORS.hud }}>{key}</span>
+              <span className="text-white/85">{text}</span>
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 結算資訊放在畫面下方，不和平台 GAME OVER 覆蓋層（置中）重疊 */
+function DebriefStrip({ data }: { data: Debrief }) {
+  const items: [string, string][] = [
+    ['WAVE', `${data.wave}`],
+    ['KILLS', `${data.kills}`],
+    ['ACCURACY', `${Math.round(data.accuracy * 100)}%`],
+    ['BEST STREAK', data.bestStreak > 1 ? `×${data.bestStreak}` : '—'],
+  ];
+  return (
+    <div className="absolute left-0 right-0 flex justify-center pointer-events-none select-none" style={{ bottom: '8%', zIndex: 45 }}>
+      <div className="flex gap-8 font-mono px-8 py-4 rounded-xl" style={{ background: 'rgba(0,15,30,0.7)', border: '1px solid rgba(127,243,255,0.3)' }}>
+        {items.map(([label, value]) => (
+          <div key={label} className="text-center">
+            <div className="text-[11px] tracking-[0.25em] text-white/60">{label}</div>
+            <div className="text-2xl font-black" style={{ color: COLORS.hud }}>{value}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 主元件（平台合約：DesktopGameProps，default export）
+// ==========================================
+export default function SkyFighter({ inputRef, paused, callbacks }: DesktopGameProps) {
+  const [game] = useState(createGameState);
+  const [status, setStatus] = useState<GameStatus>('READY');
+  const [debrief, setDebrief] = useState<Debrief | null>(null);
+  const hudRootRef = useRef<HTMLDivElement>(null);
+  const callbacksRef = useRef(callbacks);
+  const pausedRef = useRef(paused);
+
+  useEffect(() => {
+    callbacksRef.current = callbacks;
+  }, [callbacks]);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  // 掛載時回報初始狀態
+  useEffect(() => {
+    callbacksRef.current.onStatusChange('READY');
+    callbacksRef.current.onScoreChange(0);
+  }, []);
+
+  const handleStatus = useCallback((next: GameStatus) => {
+    setStatus(next);
+    if (next === 'READY') setDebrief(null);
+    callbacksRef.current.onStatusChange(next);
+  }, []);
+
+  const handleScore = useCallback((score: number) => {
+    callbacksRef.current.onScoreChange(score);
   }, []);
 
   return (
-    <>
-      {clusters.map((c, ci) => (
-        <group key={ci} position={[c.x, c.y, c.z]}>
-          {c.spheres.map((sp, si) => (
-            <mesh key={si} position={[sp.dx, sp.dy, sp.dz]}>
-              <sphereGeometry args={[sp.s, 12, 12]} />
-              <meshBasicMaterial color="#ffffff" transparent opacity={0.55} depthWrite={false} />
-            </mesh>
-          ))}
-        </group>
-      ))}
-    </>
-  );
-}
-
-// ─── Ground (Ocean) ───
-function GroundGrid() {
-  return (
-    <>
-      {/* Ocean surface */}
-      <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[2000, 2000]} />
-        <meshStandardMaterial color="#1a8caa" roughness={0.3} metalness={0.1} />
-      </mesh>
-      {/* Wave grid overlay */}
-      <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[2000, 2000, 60, 60]} />
-        <meshBasicMaterial color="#3ab8d4" wireframe transparent opacity={0.12} />
-      </mesh>
-    </>
-  );
-}
-
-// ==========================================
-// 6. Scene (inner Canvas content)
-// ==========================================
-function Scene({
-  playerRef,
-  enemiesRef,
-  bulletsRef,
-  explosionsRef,
-  status,
-}: {
-  playerRef: MutableRefObject<GameState['player']>;
-  enemiesRef: MutableRefObject<Enemy[]>;
-  bulletsRef: MutableRefObject<Bullet[]>;
-  explosionsRef: MutableRefObject<Particle[]>;
-  status: GameStatus;
-}) {
-  return (
-    <>
-      <color attach="background" args={['#7ec8e3']} />
-      <fog attach="fog" args={['#7ec8e3', 200, 800]} />
-      <hemisphereLight args={['#b1e1ff', '#3a9960', 0.6]} />
-      <directionalLight position={[100, 200, 50]} intensity={1.0} color="#fff5e0" />
-
-      <GroundGrid />
-      <Clouds />
-
-      {status !== 'READY' && (
-        <>
-          <PlayerJet playerRef={playerRef} />
-          <ChaseCam playerRef={playerRef} />
-        </>
-      )}
-
-      {/* Up to 3 enemy slots */}
-      <EnemyJet enemiesRef={enemiesRef} playerRef={playerRef} index={0} />
-      <EnemyJet enemiesRef={enemiesRef} playerRef={playerRef} index={1} />
-      <EnemyJet enemiesRef={enemiesRef} playerRef={playerRef} index={2} />
-
-      <BulletMeshes bulletsRef={bulletsRef} />
-      <ExplosionParticles explosionsRef={explosionsRef} />
-    </>
-  );
-}
-
-// ==========================================
-// 7. HUD Components
-// ==========================================
-
-function Crosshair() {
-  return (
     <div
-      className="absolute inset-0 z-10 pointer-events-none"
-      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      className="relative w-full h-screen overflow-hidden select-none"
+      // 平台裡是全螢幕；/dev 試玩頁的容器比較矮，用 maxHeight 貼齊容器
+      style={{ maxHeight: '100%', background: COLORS.skyHorizon }}
     >
-      {/* Center dot */}
-      <div style={{
-        position: 'absolute',
-        width: 4,
-        height: 4,
-        borderRadius: '50%',
-        background: 'rgba(255,255,255,0.7)',
-      }} />
-      {/* Top line */}
-      <div style={{
-        position: 'absolute',
-        width: 1,
-        height: 16,
-        background: 'rgba(255,255,255,0.4)',
-        transform: 'translateY(-14px)',
-      }} />
-      {/* Bottom line */}
-      <div style={{
-        position: 'absolute',
-        width: 1,
-        height: 16,
-        background: 'rgba(255,255,255,0.4)',
-        transform: 'translateY(14px)',
-      }} />
-      {/* Left line */}
-      <div style={{
-        position: 'absolute',
-        width: 16,
-        height: 1,
-        background: 'rgba(255,255,255,0.4)',
-        transform: 'translateX(-14px)',
-      }} />
-      {/* Right line */}
-      <div style={{
-        position: 'absolute',
-        width: 16,
-        height: 1,
-        background: 'rgba(255,255,255,0.4)',
-        transform: 'translateX(14px)',
-      }} />
-    </div>
-  );
-}
-
-function Radar({ player, enemies }: {
-  player: GameState['player'];
-  enemies: Enemy[];
-}) {
-  // Compute player heading on XZ plane from orientation
-  const q = new THREE.Quaternion(player.orientation.x, player.orientation.y, player.orientation.z, player.orientation.w);
-  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
-  const heading = Math.atan2(fwd.x, fwd.z);
-
-  const radarR = 50;
-  const scale = radarR / CFG.RADAR_RANGE;
-
-  function projectToRadar(target: Vec3): { x: number; y: number; inRange: boolean } {
-    const dx = target.x - player.pos.x;
-    const dz = target.z - player.pos.z;
-    // Rotate by negative heading to make player's forward point up
-    const cos = Math.cos(-heading);
-    const sin = Math.sin(-heading);
-    const rx = dx * cos - dz * sin;
-    const ry = -(dx * sin + dz * cos); // negate so forward = up
-    const dist = Math.sqrt(rx * rx + ry * ry);
-    const inRange = dist * scale < radarR;
-    const clampedDist = Math.min(dist * scale, radarR - 3);
-    const angle2 = Math.atan2(ry, rx);
-    return {
-      x: Math.cos(angle2) * clampedDist,
-      y: Math.sin(angle2) * clampedDist,
-      inRange,
-    };
-  }
-
-  return (
-    <div
-      className="absolute top-4 right-4 z-10"
-      style={{
-        width: radarR * 2 + 20,
-        height: radarR * 2 + 20,
-        borderRadius: '50%',
-        background: 'rgba(0,10,30,0.7)',
-        border: '2px solid rgba(0,204,255,0.3)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      {/* Player heading indicator (line pointing forward = up on radar) */}
-      <div style={{
-        position: 'absolute',
-        width: 2,
-        height: 14,
-        background: 'linear-gradient(to top, transparent, #00ccff)',
-        transformOrigin: 'center bottom',
-        transform: 'translateY(-7px)',
-        borderRadius: 1,
-      }} />
-      {/* Player dot (center) */}
-      <div style={{
-        position: 'absolute',
-        width: 5,
-        height: 5,
-        borderRadius: '50%',
-        background: '#00ccff',
-      }} />
-      {/* Enemy dots */}
-      {enemies.map(e => {
-        const p = projectToRadar(e.pos);
-        return (
-          <div
-            key={e.id}
-            style={{
-              position: 'absolute',
-              width: 5,
-              height: 5,
-              borderRadius: '50%',
-              background: '#ff3300',
-              transform: `translate(${p.x}px, ${p.y}px)`,
-              opacity: p.inRange ? 1 : 0.4,
-            }}
-          />
-        );
-      })}
-      {/* Compass N */}
-      <div style={{
-        position: 'absolute',
-        top: 2,
-        fontSize: 8,
-        color: 'rgba(255,255,255,0.3)',
-        fontFamily: 'monospace',
-      }}>N</div>
-    </div>
-  );
-}
-
-// ==========================================
-// 8. Main Component
-// ==========================================
-interface Props {
-  inputRef: MutableRefObject<NormalizedInput>;
-  paused: boolean;
-  callbacks: GameCallbacks;
-  [key: string]: any;
-}
-
-export default function Game9({ inputRef, paused, callbacks }: Props) {
-  const { gs, playerRef, enemiesRef, bulletsRef, explosionsRef } = useGameLogic(inputRef, paused, callbacks);
-  const { status, player, enemies, phase } = gs;
-
-  const hpPct = player.hp / CFG.PLAYER_HP;
-  const ammoPct = player.ammo / player.maxAmmo;
-  const speedKmh = Math.floor(player.speed * 500);
-
-  const hpColor = hpPct > 0.6 ? '#00ff66' : hpPct > 0.3 ? '#ffcc00' : '#ff3300';
-
-  return (
-    <div className="relative w-full h-screen overflow-hidden select-none" style={{ background: '#7ec8e3' }}>
-      {/* R3F Canvas */}
       <Canvas
-        camera={{ position: [0, 50, 30], fov: 70, near: 0.1, far: 1000 }}
-        gl={{ antialias: false, alpha: false }}
+        camera={{ position: [0, 95, 16], fov: VIEW.FOV_BASE, near: 0.1, far: 2600 }}
+        dpr={[1, 1.5]}
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
         style={{ position: 'absolute', inset: 0 }}
       >
-        <Scene
-          playerRef={playerRef}
-          enemiesRef={enemiesRef}
-          bulletsRef={bulletsRef}
-          explosionsRef={explosionsRef}
-          status={status}
+        <GameDriver
+          game={game}
+          inputRef={inputRef}
+          pausedRef={pausedRef}
+          hudRootRef={hudRootRef}
+          onStatus={handleStatus}
+          onScore={handleScore}
+          onGameOver={setDebrief}
         />
+        <SkyScene game={game} />
       </Canvas>
 
-      {/* HUD: Playing */}
-      {status === 'PLAYING' && (
-        <>
-          {/* Crosshair */}
-          <Crosshair />
-
-          {/* HP Bar — top-left */}
-          <div className="absolute top-4 left-4 z-10" style={{ width: 140 }}>
-            <div className="text-[10px] font-mono text-white/50 mb-1">HP</div>
-            <div style={{
-              width: '100%',
-              height: 8,
-              background: 'rgba(255,255,255,0.1)',
-              borderRadius: 4,
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                width: `${hpPct * 100}%`,
-                height: '100%',
-                background: hpColor,
-                borderRadius: 4,
-                transition: 'width 0.2s, background 0.3s',
-              }} />
-            </div>
-            <div className="text-[10px] font-mono mt-0.5" style={{ color: hpColor }}>
-              {player.hp}/{CFG.PLAYER_HP}
-            </div>
-          </div>
-
-          {/* Score + Phase — top-center */}
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 text-center">
-            <div className="text-2xl font-black tracking-[0.3em] text-white/80 font-mono"
-              style={{ textShadow: '0 0 20px rgba(0,204,255,0.5)' }}>
-              {player.score.toString().padStart(7, '0')}
-            </div>
-            <div className="text-[10px] font-mono text-cyan-400/60 mt-0.5">
-              PHASE {phase} {' '} KILLS {player.kills}
-            </div>
-          </div>
-
-          {/* Radar — top-right */}
-          <Radar player={player} enemies={enemies} />
-
-          {/* Ammo — bottom-left */}
-          <div className="absolute bottom-4 left-4 z-10" style={{ width: 140 }}>
-            <div className="text-xs font-mono text-white/60 mb-1">
-              AMMO {Math.floor(player.ammo)}/{player.maxAmmo}
-            </div>
-            <div style={{
-              width: '100%',
-              height: 6,
-              background: 'rgba(255,255,255,0.1)',
-              borderRadius: 3,
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                width: `${ammoPct * 100}%`,
-                height: '100%',
-                background: ammoPct > 0.3 ? '#00ccff' : '#ff4400',
-                borderRadius: 3,
-                transition: 'width 0.15s',
-              }} />
-            </div>
-          </div>
-
-          {/* Speed + Altitude — bottom-center */}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 text-center">
-            <div className="text-lg font-bold text-white/70 font-mono tracking-wider">
-              {speedKmh} <span className="text-xs text-white/40">km/h</span>
-            </div>
-            <div className="text-[10px] font-mono text-white/40 mt-0.5">
-              ALT {Math.floor(player.pos.y)}
-            </div>
-          </div>
-
-          {/* Altitude warning — PULL UP */}
-          {player.pos.y < 30 && (
-            <div
-              className="absolute z-10 left-1/2 -translate-x-1/2"
-              style={{ bottom: 80 }}
-            >
-              <div
-                className="text-xl font-black font-mono tracking-widest"
-                style={{
-                  color: '#ff3300',
-                  textShadow: '0 0 20px rgba(255,51,0,0.8), 0 0 40px rgba(255,51,0,0.4)',
-                  animation: 'pullUpFlash 0.4s ease-in-out infinite alternate',
-                }}
-              >
-                ⚠ PULL UP ⚠
-              </div>
-              <style>{`
-                @keyframes pullUpFlash {
-                  0% { opacity: 1; }
-                  100% { opacity: 0.2; }
-                }
-              `}</style>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* READY overlay */}
-      {status === 'READY' && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4"
-          style={{ background: 'rgba(10,10,46,0.6)' }}>
-          <div className="text-5xl font-black tracking-wider"
-            style={{
-              color: '#00eeff',
-              textShadow: '0 0 30px rgba(0,238,255,0.6), 0 0 60px rgba(0,238,255,0.3)',
-            }}>
-            SKY FIGHTER
-          </div>
-          <div className="text-white/30 text-sm tracking-widest animate-pulse font-mono">
-            TILT TO FLY &middot; HOLD FIRE TO SHOOT
-          </div>
-          <div className="flex gap-6 mt-4">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-sm" style={{ background: 'rgba(0,204,255,0.3)', border: '1px solid #00ccff' }} />
-              <span className="text-white/40 text-xs">YOUR JET</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-sm" style={{ background: 'rgba(255,51,0,0.3)', border: '1px solid #ff3300' }} />
-              <span className="text-white/40 text-xs">ENEMY</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rotate-45" style={{ background: '#ffcc00' }} />
-              <span className="text-white/40 text-xs">AMMO</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* GAME OVER overlay */}
-      {status === 'GAME_OVER' && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
-          <div className="text-4xl font-black text-red-500 tracking-wider"
-            style={{ textShadow: '0 0 30px rgba(239,68,68,0.5)' }}>
-            SHOT DOWN
-          </div>
-          <div className="text-2xl font-bold text-white/80 tracking-widest font-mono">
-            {player.score.toString().padStart(7, '0')}
-          </div>
-          <div className="text-xs text-white/40 font-mono">
-            KILLS: {player.kills}
-          </div>
-          <div className="text-white/30 text-xs tracking-widest mt-2 animate-pulse">
-            TAP RESTART
-          </div>
-        </div>
-      )}
+      <Hud rootRef={hudRootRef} visible={status === 'PLAYING' || status === 'PAUSED'} />
+      {status === 'READY' && <TitleCard />}
+      {status === 'GAME_OVER' && debrief && <DebriefStrip data={debrief} />}
     </div>
   );
 }
